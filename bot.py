@@ -1,15 +1,41 @@
+import os
 import sqlite3
+from threading import Thread
+from flask import Flask
 import telebot
 from telebot import types
 
-# Configurations
-API_TOKEN = '8809150454:AAFVoJIP2RzwABlYAKcG9EtTnNA4nkfwwdU'  # @BotFather থেকে পাওয়া টোকেন
+# ================= 1. RENDER PORT KEEP-ALIVE SERVER =================
+app = Flask('')
+
+
+@app.route('/')
+def home():
+  return '⚡ RAFIM TOOLS OFFICIAL Bot is Running 24/7!'
+
+
+def run_web_server():
+  port = int(os.environ.get('PORT', 8080))
+  app.run(host='0.0.0.0', port=port)
+
+
+def keep_alive():
+  t = Thread(target=run_web_server)
+  t.daemon = True
+  t.start()
+
+
+# সার্ভার চালু করা (Port Bind)
+keep_alive()
+
+# ================= 2. BOT CONFIGURATIONS =================
+API_TOKEN = '8809150454:AAE8QG2p1puROgIohVfv-2J8O8L04lejWSo'  # @BotFather থেকে পাওয়া টোকেন দিন
 ADMIN_ID = 8298133943  # আপনার টেলিগ্রাম অ্যাডমিন আইডি
 
 bot = telebot.TeleBot(API_TOKEN)
 
 
-# Database Setup
+# ================= 3. DATABASE SETUP =================
 def init_db():
   conn = sqlite3.connect('rafim_tools.db')
   cursor = conn.cursor()
@@ -26,7 +52,7 @@ def init_db():
                         reward_credits INTEGER,
                         used_by TEXT DEFAULT ''
                     )''')
-  # Default Codes
+  # Default Demo Codes
   cursor.execute(
       "INSERT OR IGNORE INTO promo_codes (code, reward_credits) VALUES"
       " ('RAFIM10', 10)"
@@ -100,13 +126,13 @@ def set_ban_status(user_id, status):
   conn = sqlite3.connect('rafim_tools.db')
   cursor = conn.cursor()
   cursor.execute(
-      'UPDATE users SET is_banned = ? WHERE user_id = ?", (status, user_id)'
+      'UPDATE users SET is_banned = ? WHERE user_id = ?', (status, user_id)
   )
   conn.commit()
   conn.close()
 
 
-# Keyboards
+# ================= 4. KEYBOARDS =================
 def get_main_keyboard():
   markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
   btn1 = types.KeyboardButton('🔍 BD Number Info')
@@ -129,7 +155,7 @@ def get_action_inline():
   return markup
 
 
-# ================= ADMIN BAN / UNBAN =================
+# ================= 5. ADMIN COMMANDS (/ban & /unban) =================
 @bot.message_handler(commands=['ban'])
 def ban_command(message):
   if message.from_user.id != ADMIN_ID:
@@ -140,7 +166,7 @@ def ban_command(message):
     set_ban_status(target_id, 1)
     bot.reply_to(
         message,
-        f'🚫 <b>User {target_id} কে সফলভাবে ব্যান করা হয়েছে!</b>',
+        f'🚫 <b>User {target_id} কে ব্যান করা হয়েছে!</b>',
         parse_mode='HTML',
     )
     try:
@@ -180,7 +206,7 @@ def unban_command(message):
     bot.reply_to(message, 'সঠিক ফরম্যাট: <code>/unban 123456789</code>')
 
 
-# ================= START COMMAND =================
+# ================= 6. START COMMAND =================
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
   user_id = message.from_user.id
@@ -194,10 +220,10 @@ def send_welcome(message):
   args = message.text.split()
   referrer_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
 
-  # ইউজার রেজিস্ট্রেশন ও অ্যাডমিন নোটিফিকেশন
+  # ইউজার ডাটাবেজে যুক্ত করা
   is_new = register_user(user_id, referrer_id)
 
-  # নতুন ইউজার বট স্টার্ট করলেই অ্যাডমিনের কাছে অ্যালার্ট যাবে
+  # নতুন ইউজার জয়েন করলে অ্যাডমিনের কাছে নোটিফিকেশন পাঠানো
   if is_new and user_id != ADMIN_ID:
     try:
       admin_alert = f"""🔔 <b>NEW USER JOINED!</b>
@@ -223,15 +249,15 @@ def send_welcome(message):
 
 👋 <b>স্বাগতম, {user_name}!</b>
 
-🔍 <b>BD Number Info</b> — বাংলাদেশি নম্বরের প্রিফিক্স ও অপারেটর তথ্য
-👤 <b>My Account</b> — প্রোফাইল স্ট্যাটাস ও পয়েন্ট
+🔍 <b>BD Number Info</b> — বাংলাদেশি নম্বরের অপারেটর ও এরিয়া তথ্য
+👤 <b>My Account</b> — প্রোফাইল স্ট্যাটাস ও ক্রেডিট
 🎁 <b>Refer & Earn</b> — বন্ধুদের ইনভাইট করে ফ্রি পয়েন্ট অর্জন
-📞 <b>Support</b> — যেকোনো প্রয়োজনে সরাসরি সহায়তা
+📞 <b>Support</b> — যেকোনো সমস্যা বা প্রয়োজনে সহায়তা
 
 ⚠️ <b>Disclaimer & নোটিশ:</b>
-<i>এই বটটি কেবল প্রোগ্রামিং প্রজেক্ট ও শিক্ষামূলক প্রদর্শনের (Educational Purpose) উদ্দেশ্যে তৈরি করা হয়েছে। এটি কোনো সরকারি/টেলিকম ডেটাবেজ নয় এবং এতে কারো ব্যক্তিগত সংবেদনশীল তথ্য সংরক্ষণ করা হয় না।</i>
+<i>এই বটটি সম্পূর্ণ শিক্ষামূলক উদ্দেশ্যে (Educational / Demonstration Purpose) তৈরি করা হয়েছে। এটি কোনো টেলিকম বা সরকারি ডাটাবেজ নয় এবং কারও ব্যক্তিগত সংবেদনশীল তথ্য সংরক্ষণ বা প্রকাশ করে না।</i>
 
-📌 <i>নিচের মেনু ব্যবহার করুন অথবা ১১ ডিজিটের নম্বর লিখুন:</i>
+📌 <i>নিচের মেনু ব্যবহার করুন অথবা ১১ ডিজিটের নম্বর পাঠান:</i>
 ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"""
 
   bot.send_message(
@@ -242,7 +268,7 @@ def send_welcome(message):
   )
 
 
-# ================= MENU ACTIONS =================
+# ================= 7. MENU ACTIONS =================
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_click(message):
   user_id = message.from_user.id
@@ -263,7 +289,8 @@ def handle_menu_click(message):
     if credits <= 0:
       bot.send_message(
           user_id,
-          '⚠️ <b>সার্চ লিমিট শেষ!</b>\nপয়েন্ট রিচার্জ করতে নিচের বাটন চাপুন:',
+          '⚠️ <b>সার্চ ক্রেডিট শেষ!</b>\nপয়েন্ট রিচার্জ করতে নিচের বাটন ব্যবহার'
+          ' করুন:',
           parse_mode='HTML',
           reply_markup=get_action_inline(),
       )
@@ -294,7 +321,7 @@ def handle_menu_click(message):
     refer_link = f'https://t.me/{bot_username}?start={user_id}'
     ref_text = f"""╭━━━〔 🎁 <b>REFER & REWARD</b> 〕━━━╮
 
-আপনার বন্ধুদের নিচের লিংকে ইনভাইট করুন। কেউ জয়েন করলেই আপনি পাবেন <b>+৩ ক্রেডিট</b> একদম ফ্রি!
+আপনার বন্ধুদের এই লিংকের মাধ্যমে ইনভাইট করুন। কেউ জয়েন করলেই আপনি পাবেন <b>+৩ ক্রেডিট</b> একদম ফ্রি!
 
 🔗 <b>আপনার পার্সোনাল রেফার লিংক:</b>
 <code>{refer_link}</code>
@@ -316,7 +343,7 @@ def handle_menu_click(message):
     process_lookup_direct(message, text)
 
 
-# ================= CALLBACKS =================
+# ================= 8. INLINE BUTTON CALLBACKS =================
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callbacks(call):
   user_id = call.message.chat.id
@@ -336,7 +363,7 @@ def handle_callbacks(call):
 📌 <b>Nagad Personal (Send Money):</b>
 <code>01726836941</code>
 
-টাকা পাঠানোর পর <b>TrxID</b> নিচে লিখে সেন্ড করুন:
+টাকা পাঠানোর পর <b>TrxID</b> নিচে লিখে রিপ্লাই পাঠান:
 ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"""
     msg = bot.send_message(user_id, payment_info, parse_mode='HTML')
     bot.register_next_step_handler(msg, receive_trx_id)
@@ -359,8 +386,8 @@ def handle_callbacks(call):
     try:
       bot.send_message(
           target_user,
-          f'🎉 <b>পেমেন্ট সফল হয়েছে!</b>\nআপনার একাউন্টে <b>+{amount} ক্রেডিট</b>'
-          ' যোগ করা হয়েছে।',
+          f'🎉 <b>পেমেন্ট কনফার্ম হয়েছে!</b>\nআপনার একাউন্টে <b>+{amount}'
+          ' ক্রেডিট</b> যোগ করা হয়েছে।',
           parse_mode='HTML',
       )
     except:
@@ -373,7 +400,7 @@ def handle_callbacks(call):
     )
 
 
-# ================= LOOKUP LOGIC =================
+# ================= 9. LOOKUP LOGIC =================
 def process_lookup_direct(message, number):
   user_id = message.from_user.id
   user_data = get_user_data(user_id)
@@ -414,7 +441,7 @@ def process_lookup_direct(message, number):
 🌐 <b>Country:</b> Bangladesh 🇧🇩
 📡 <b>Network Status:</b> Operational / Active
 
-🔒 <i>Disclaimer: তথ্যটি শিক্ষামূলক উদ্দেশ্যে প্রদর্শিত এবং পাবলিক নেটওয়ার্ক প্রিফিক্স অনুযায়ী সিমুলেটেড।</i>
+🔒 <i>Disclaimer: প্রদর্শিত তথ্য শিক্ষামূলক উদ্দেশ্যে প্রিফিক্স অনুযায়ী তৈরি।</i>
 
 💳 <i>অবশিষ্ট ক্রেডিট: {user_data[0]}</i>
 ╰━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╯"""
@@ -434,14 +461,14 @@ def process_lookup(message):
     )
 
 
-# ================= PAYMENT HANDLER =================
+# ================= 10. PAYMENT SUBMISSION =================
 def receive_trx_id(message):
   user_id = message.from_user.id
   trx = message.text.strip()
 
   bot.send_message(
       user_id,
-      '✅ <b>TrxID গৃহীত হয়েছে!</b> অ্যাডমিন যাচাই করে ক্রেডিট যোগ করে দেবেন।',
+      '✅ <b>TrxID গৃহীত হয়েছে!</b> অ্যাডমিন ভেরিফাই করে ক্রেডিট যোগ করে দেবেন।',
       parse_mode='HTML',
   )
 
@@ -471,7 +498,7 @@ def receive_trx_id(message):
   )
 
 
-# ================= REDEEM CODE HANDLER =================
+# ================= 11. REDEEM CODE =================
 def process_redeem_code(message):
   user_id = message.from_user.id
   code = message.text.strip().upper()
