@@ -23,7 +23,7 @@ from telegram.ext import (
 # =========================================================
 
 # 👉 এখানে তোমার নতুন BotFather TOKEN বসাবে
-BOT_TOKEN = "8809150454:AAFCbJ-fAk3wIz6eWnfFNogRFm-0PsWMTQA"
+BOT_TOKEN = "8809150454:AAF3X6KjjQIGQH2w2nYINe8bGVDqB7JMQOk"
 
 # 👉 তোমার Admin/User ID — আগে থেকেই সেট করা
 ADMIN_ID = 8298133943
