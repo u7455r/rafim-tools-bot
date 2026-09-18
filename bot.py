@@ -1,553 +1,1486 @@
 import os
 import sqlite3
-from threading import Thread
-from flask import Flask
-import telebot
-from telebot import types
+import logging
+import secrets
+from datetime import datetime, timedelta
 
-# ================= 1. RENDER PORT KEEP-ALIVE SERVER =================
-app = Flask("")
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
+
+# =========================================================
+# SUPER BOT — FINAL
+# =========================================================
+
+# 👉 এখানে তোমার নতুন BotFather TOKEN বসাবে
+BOT_TOKEN = "8809150454:AAFCbJ-fAk3wIz6eWnfFNogRFm-0PsWMTQA"
+
+# 👉 তোমার Admin/User ID — আগে থেকেই সেট করা
+ADMIN_ID = 8298133943
+
+DB_NAME = "superbot.db"
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
+logger = logging.getLogger(__name__)
 
 
-@app.route("/")
-def home():
-  return "⚡ RAFIM TOOLS OFFICIAL Bot is Running 24/7!"
+# =========================================================
+# DATABASE
+# =========================================================
+
+def db():
+    return sqlite3.connect(DB_NAME)
 
 
-def run_web_server():
-  port = int(os.environ.get("PORT", 8080))
-  app.run(host="0.0.0.0", port=port)
-
-
-def keep_alive():
-  t = Thread(target=run_web_server)
-  t.daemon = True
-  t.start()
-
-
-keep_alive()
-
-# ================= 2. BOT CONFIGURATIONS =================
-API_TOKEN = "8809150454:AAGdTm_KSgoRfzMuN6rIC6L877rl9THZ0RQ"  # আপনার বটের টোকেন বসান
-ADMIN_ID = 8298133943  # আপনার অ্যাডমিন আইডি
-
-bot = telebot.TeleBot(API_TOKEN)
-
-
-# ================= 3. DATABASE SETUP =================
 def init_db():
-  conn = sqlite3.connect("rafim_tools.db")
-  cursor = conn.cursor()
-  cursor.execute("""CREATE TABLE IF NOT EXISTS users (
-                        user_id INTEGER PRIMARY KEY,
-                        credits INTEGER DEFAULT 3,
-                        referred_by INTEGER,
-                        is_banned INTEGER DEFAULT 0
-                    )""")
-  cursor.execute("""CREATE TABLE IF NOT EXISTS promo_codes (
-                        code TEXT PRIMARY KEY,
-                        reward_credits INTEGER,
-                        used_by TEXT DEFAULT ''
-                    )""")
-  cursor.execute(
-      "INSERT OR IGNORE INTO promo_codes (code, reward_credits) VALUES"
-      " ('RAFIM10', 10)"
-  )
-  cursor.execute(
-      "INSERT OR IGNORE INTO promo_codes (code, reward_credits) VALUES ('FREE5',"
-      " 5)"
-  )
-  conn.commit()
-  conn.close()
+    con = db()
+    cur = con.cursor()
 
-
-init_db()
-
-
-def get_user_data(user_id):
-  conn = sqlite3.connect("rafim_tools.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "SELECT credits, referred_by, is_banned FROM users WHERE user_id = ?",
-      (user_id,),
-  )
-  row = cursor.fetchone()
-  conn.close()
-  return row
-
-
-def register_user(user_id, referrer_id=None):
-  conn = sqlite3.connect("rafim_tools.db")
-  cursor = conn.cursor()
-  cursor.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
-  is_new = cursor.fetchone() is None
-
-  if is_new:
-    cursor.execute(
-        "INSERT INTO users (user_id, credits, referred_by, is_banned) VALUES"
-        " (?, ?, ?, 0)",
-        (user_id, 3, referrer_id),
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        name TEXT,
+        username TEXT,
+        joined TEXT,
+        messages INTEGER DEFAULT 0,
+        points INTEGER DEFAULT 0,
+        referrals INTEGER DEFAULT 0,
+        referred_by INTEGER DEFAULT 0,
+        streak INTEGER DEFAULT 0,
+        last_daily TEXT DEFAULT '',
+        last_active TEXT DEFAULT ''
     )
-    if referrer_id and referrer_id != user_id:
-      cursor.execute(
-          "UPDATE users SET credits = credits + 3 WHERE user_id = ?",
-          (referrer_id,),
-      )
-      try:
-        bot.send_message(
-            referrer_id,
-            "🎉 <b>New Referral Bonus!</b>\nএকজন নতুন ইউজার আপনার লিংকে যুক্ত"
-            " হয়েছে। <b>+3 Credits</b> যোগ হয়েছে!",
-            parse_mode="HTML",
-        )
-      except:
-        pass
-    conn.commit()
-  conn.close()
-  return is_new
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS notes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        text TEXT,
+        created TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS tasks (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        text TEXT,
+        done INTEGER DEFAULT 0,
+        created TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS reminders (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        text TEXT,
+        minutes INTEGER,
+        created TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS redeem_codes (
+        code TEXT PRIMARY KEY,
+        points INTEGER,
+        uses INTEGER DEFAULT 1,
+        used INTEGER DEFAULT 0
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS redeemed (
+        user_id INTEGER,
+        code TEXT,
+        UNIQUE(user_id, code)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        amount INTEGER,
+        reason TEXT,
+        created TEXT
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS achievements (
+        user_id INTEGER,
+        achievement TEXT,
+        UNIQUE(user_id, achievement)
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS feedback (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        text TEXT,
+        created TEXT
+    )
+    """)
+
+    con.commit()
+    con.close()
 
 
-def update_credits(user_id, amount):
-  conn = sqlite3.connect("rafim_tools.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "UPDATE users SET credits = credits + ? WHERE user_id = ?",
-      (amount, user_id),
-  )
-  conn.commit()
-  conn.close()
+# =========================================================
+# USER SYSTEM
+# =========================================================
 
+def register_user(user, referral_id=0):
+    con = db()
+    cur = con.cursor()
 
-def set_ban_status(user_id, status):
-  conn = sqlite3.connect("rafim_tools.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "UPDATE users SET is_banned = ? WHERE user_id = ?", (status, user_id)
-  )
-  conn.commit()
-  conn.close()
-
-
-# ================= 4. KEYBOARDS (রিডিম কোডসহ মেনু বাটন) =================
-def get_main_keyboard():
-  markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-  btn1 = types.KeyboardButton("🔍 BD Number Info")
-  btn2 = types.KeyboardButton("👤 My Account")
-  btn3 = types.KeyboardButton("🎁 Refer & Earn")
-  btn4 = types.KeyboardButton("🎟️ Redeem Code")
-  btn5 = types.KeyboardButton("📞 Support")
-  markup.add(btn1, btn2, btn3, btn4, btn5)
-  return markup
-
-
-def get_action_inline():
-  markup = types.InlineKeyboardMarkup(row_width=2)
-  btn_buy = types.InlineKeyboardButton(
-      "💳 Buy Credits (Nagad)", callback_data="btn_buy_credits"
-  )
-  markup.add(btn_buy)
-  return markup
-
-
-# ================= 5. ADMIN COMMANDS (/ban, /unban, /addcode) =================
-@bot.message_handler(commands=["addcode"])
-def add_code_cmd(message):
-  if message.from_user.id != ADMIN_ID:
-    return
-  args = message.text.split()
-  if len(args) == 3 and args[2].isdigit():
-    code_name = args[1].upper()
-    points = int(args[2])
-    conn = sqlite3.connect("rafim_tools.db")
-    cursor = conn.cursor()
-    try:
-      cursor.execute(
-          "INSERT INTO promo_codes (code, reward_credits, used_by) VALUES (?,"
-          " ?, '')",
-          (code_name, points),
-      )
-      conn.commit()
-      bot.reply_to(
-          message,
-          f"🎟️ <b>Redeem Code Created!</b>\nCode: <code>{code_name}</code>\nPoint:"
-          f" <b>+{points}</b>",
-          parse_mode="HTML",
-      )
-    except sqlite3.IntegrityError:
-      bot.reply_to(message, "❌ এই কোডটি আগেই তৈরি করা আছে!")
-    finally:
-      conn.close()
-  else:
-    bot.reply_to(
-        message, "ব্যবহারবিধি: <code>/addcode CODE_NAME CREDITS</code>"
+    cur.execute(
+        "SELECT user_id FROM users WHERE user_id=?",
+        (user.id,)
     )
 
+    exists = cur.fetchone()
 
-@bot.message_handler(commands=["ban"])
-def ban_cmd(message):
-  if message.from_user.id != ADMIN_ID:
-    return
-  args = message.text.split()
-  if len(args) > 1 and args[1].isdigit():
-    target_id = int(args[1])
-    set_ban_status(target_id, 1)
-    bot.reply_to(message, f"🚫 User <code>{target_id}</code> ব্যান করা হয়েছে।")
-  else:
-    bot.reply_to(message, "ফরম্যাট: <code>/ban 123456789</code>")
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    if not exists:
+        cur.execute("""
+        INSERT INTO users
+        (user_id,name,username,joined,messages,points,referrals,
+        referred_by,streak,last_daily,last_active)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            user.id,
+            user.first_name or "",
+            user.username or "",
+            now,
+            0,
+            0,
+            0,
+            referral_id if referral_id else 0,
+            0,
+            "",
+            now
+        ))
 
-@bot.message_handler(commands=["unban"])
-def unban_cmd(message):
-  if message.from_user.id != ADMIN_ID:
-    return
-  args = message.text.split()
-  if len(args) > 1 and args[1].isdigit():
-    target_id = int(args[1])
-    set_ban_status(target_id, 0)
-    bot.reply_to(
-        message, f"✅ User <code>{target_id}</code> আনব্যান করা হয়েছে।"
-    )
-  else:
-    bot.reply_to(message, "ফরম্যাট: <code>/unban 123456789</code>")
+        # Referral reward
+        if referral_id and referral_id != user.id:
+            cur.execute("""
+            UPDATE users
+            SET points=points+50,
+                referrals=referrals+1
+            WHERE user_id=?
+            """, (referral_id,))
 
+            cur.execute("""
+            INSERT INTO history(user_id,amount,reason,created)
+            VALUES(?,?,?,?)
+            """, (
+                referral_id,
+                50,
+                "Successful referral",
+                now
+            ))
 
-# ================= 6. START COMMAND =================
-@bot.message_handler(commands=["start"])
-def send_welcome(message):
-  user_id = message.from_user.id
-  user_name = message.from_user.first_name
-  username = (
-      f"@{message.from_user.username}"
-      if message.from_user.username
-      else "No Username"
-  )
-
-  args = message.text.split()
-  referrer_id = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
-  is_new = register_user(user_id, referrer_id)
-
-  if is_new and user_id != ADMIN_ID:
-    try:
-      admin_alert = f"""🚨 <b>NEW USER REGISTERED</b>
-━━━━━━━━━━━━━━━━━━━━
-👤 <b>Name:</b> {message.from_user.full_name}
-🆔 <b>User ID:</b> <code>{user_id}</code>
-🔗 <b>Username:</b> {username}
-👥 <b>Invited By:</b> {referrer_id if referrer_id else 'Direct Search'}"""
-      bot.send_message(ADMIN_ID, admin_alert, parse_mode="HTML")
-    except:
-      pass
-
-  user_data = get_user_data(user_id)
-  if user_data and user_data[2] == 1:
-    bot.send_message(
-        user_id,
-        "🚫 <b>Access Denied!</b> আপনাকে বট থেকে ব্যান করা হয়েছে।",
-        parse_mode="HTML",
-    )
-    return
-
-  welcome_text = f"""╔══════════════════════════════════╗
-       ⚡ <b>RAFIM TOOLS OFFICIAL</b> ⚡
-╚══════════════════════════════════╝
-
-👋 <b>স্বাগতম, {user_name}!</b>
-
-🔍 <b>BD Number Info</b> — কলার নাম, অপারেটর ও লোকেশন তথ্য
-👤 <b>My Account</b> — অ্যাকাউন্ট ব্যালেন্স ও ভিআইপি স্ট্যাটাস
-🎁 <b>Refer & Earn</b> — বন্ধুদের আমন্ত্রণ জানিয়ে আনলিমিটেড পয়েন্ট
-🎟️ <b>Redeem Code</b> — স্পেশাল ভাউচার দিয়ে ফ্রি ক্রেডিট
-📞 <b>Support</b> — সরাসরি অ্যাডমিন সহায়তা ও ২৪/৭ হেল্পলাইন
-
-⚠️ <b>আইনি সতর্কতা ও ডিসক্লেইমার:</b>
-<i>এই বটটি সম্পূর্ণ শিক্ষামূলক উদ্দেশ্যে তৈরি। টেলিকম নেটওয়ার্কের পাবলিক প্রিফিক্স ও কলার আইডেন্টিফায়ার অনুসারে তথ্য প্রদর্শিত হয়।</i>
-
-📌 <i>যেকোনো ১১ ডিজিটের নম্বর লিখুন অথবা নিচের মেনু ব্যবহার করুন:</i>"""
-
-  bot.send_message(
-      user_id,
-      welcome_text,
-      parse_mode="HTML",
-      reply_markup=get_main_keyboard(),
-  )
-
-
-# ================= 7. MENU ACTIONS =================
-@bot.message_handler(func=lambda msg: True)
-def handle_menu(message):
-  user_id = message.from_user.id
-  user_data = get_user_data(user_id)
-
-  if user_data and user_data[2] == 1:
-    bot.send_message(
-        user_id,
-        "🚫 <b>আপনি ব্যান থাকায় সার্ভিস ব্যবহার করতে পারবেন না।</b>",
-        parse_mode="HTML",
-    )
-    return
-
-  credits = user_data[0] if user_data else 0
-  text = message.text.strip()
-
-  if text == "🔍 BD Number Info":
-    if credits <= 0:
-      bot.send_message(
-          user_id,
-          "⚠️ <b>সার্চ ক্রেডিট শেষ!</b>\nরিচার্জ করতে নিচের বাটনে চাপ দিন:",
-          parse_mode="HTML",
-          reply_markup=get_action_inline(),
-      )
-      return
-    msg = bot.send_message(
-        user_id,
-        "📌 <b>টার্গেট মোবাইল নম্বরটি পাঠান:</b>\n<i>উদাহরণ: 017XXXXXXXX</i>",
-        parse_mode="HTML",
-    )
-    bot.register_next_step_handler(msg, process_lookup)
-
-  elif text == "👤 My Account":
-    status_tag = "💎 VIP Elite" if credits >= 10 else "🟢 Active Member"
-    acc_text = f"""╔══════════════════════════════════╗
-         👤 <b>USER DASHBOARD</b>
-╚══════════════════════════════════╝
-
-🆔 <b>User ID:</b> <code>{user_id}</code>
-👤 <b>Name:</b> {message.from_user.full_name}
-⚡ <b>Tier Status:</b> {status_tag}
-💰 <b>Search Credits:</b> <b>{credits} Points</b>
-🛡️ <b>Database Link:</b> Encrypted & Secured"""
-    bot.send_message(
-        user_id, acc_text, parse_mode="HTML", reply_markup=get_action_inline()
-    )
-
-  elif text == "🎁 Refer & Earn":
-    bot_username = bot.get_me().username
-    refer_link = f"https://t.me/{bot_username}?start={user_id}"
-    ref_text = f"""╔══════════════════════════════════╗
-         🎁 <b>REFER & EARN CASH/POINT</b>
-╚══════════════════════════════════╝
-
-আপনার বন্ধুদের ইনভাইট করলেই প্রতি রেফারে পাচ্ছেন <b>+৩ ক্রেডিট</b> একদম ফ্রি!
-
-🔗 <b>আপনার ইউনিক রেফারেল লিংক:</b>
-<code>{refer_link}</code>"""
-    bot.send_message(user_id, ref_text, parse_mode="HTML")
-
-  elif text == "🎟️ Redeem Code":
-    msg = bot.send_message(
-        user_id,
-        "🎟️ <b>আপনার প্রোমো/রিডিম কোডটি লিখুন:</b>\n<i>যেমন: <code>RAFIM10</code></i>",
-        parse_mode="HTML",
-    )
-    bot.register_next_step_handler(msg, process_redeem_code)
-
-  elif text == "📞 Support":
-    support_text = """╔══════════════════════════════════╗
-          📞 <b>VIP SUPPORT DESK</b>
-╚══════════════════════════════════╝
-
-যেকোনো সমস্যা, রিচার্জ বা তথ্যের জন্য সরাসরি যোগাযোগ করুন:
-👤 <b>Official Admin:</b> @RafimToolsAdmin"""
-    bot.send_message(user_id, support_text, parse_mode="HTML")
-
-  elif len(text) == 11 and text.isdigit() and text.startswith("01"):
-    process_lookup_direct(message, text)
-
-
-# ================= 8. LOOKUP WITH CALLER NAME =================
-def process_lookup_direct(message, number):
-  user_id = message.from_user.id
-  user_data = get_user_data(user_id)
-  credits = user_data[0] if user_data else 0
-
-  if credits <= 0:
-    bot.send_message(
-        user_id,
-        "⚠️ <b>পর্যাপ্ত ক্রেডিট নেই!</b> সার্ভিস পেতে রিচার্জ অথবা রেফার করুন।",
-        parse_mode="HTML",
-        reply_markup=get_action_inline(),
-    )
-    return
-
-  update_credits(user_id, -1)
-  user_data = get_user_data(user_id)
-
-  op_prefix = number[:3]
-  operators = {
-      "017": ("Grameenphone", "Dhaka & Central Zone"),
-      "013": ("Grameenphone (4G Prime)", "Nationwide Network"),
-      "019": ("Banglalink Digital", "Western & Central Region"),
-      "014": ("Banglalink (Data Prime)", "Nationwide Network"),
-      "018": ("Robi Axiata", "Chittagong & Coastal Region"),
-      "016": ("Airtel (Metro HLR)", "Urban Metropolitan Area"),
-      "015": ("Teletalk Bangladesh", "Government / State Network"),
-  }
-
-  op_name, region_info = operators.get(
-      op_prefix, ("Unknown Operator", "Bangladesh Telecom Zone")
-  )
-
-  # প্রিমিয়াম কলার নেম প্রিভিউ
-  caller_name = (
-      f"Subscriber #{number[-4:]} [TrueCaller / Verified Registry]"
-  )
-
-  result_card = f"""╔══════════════════════════════════╗
-       ⚡ <b>INTELLIGENCE LOOKUP RESULT</b> ⚡
-╚══════════════════════════════════╝
-
-📱 <b>Target Number:</b> <code>{number}</code>
-👤 <b>Registered Name:</b> <b>{caller_name}</b>
-🏢 <b>Primary Operator:</b> {op_name}
-📍 <b>HLR Routing Location:</b> {region_info}
-🌐 <b>Country:</b> Bangladesh 🇧🇩
-📡 <b>Line Health:</b> Active / Operational
-🔒 <b>Gateway Security:</b> 256-Bit Encrypted
-
-⚠️ <i>Notice: প্রদর্শিত তথ্য পাবলিক নেটওয়ার্ক ও সিমুলেটেড ডিরেক্টরি অনুযায়ী শিক্ষামূলক উদ্দেশ্যে জেনারেট করা।</i>
-
-💳 <i>অবশিষ্ট ক্রেডিট: {user_data[0]}</i>"""
-
-  bot.send_message(user_id, result_card, parse_mode="HTML")
-
-
-def process_lookup(message):
-  number = message.text.strip()
-  if len(number) == 11 and number.isdigit() and number.startswith("01"):
-    process_lookup_direct(message, number)
-  else:
-    bot.send_message(
-        message.chat.id,
-        "❌ <b>ভুল নম্বর ফরম্যাট!</b> সঠিক ১১ ডিজিটের নম্বর দিন।",
-        parse_mode="HTML",
-    )
-
-
-# ================= 9. PAYMENT & REDEEM CODE LOGIC =================
-@bot.callback_query_handler(func=lambda call: True)
-def handle_callbacks(call):
-  user_id = call.message.chat.id
-
-  if call.data == "btn_buy_credits":
-    payment_info = """╔══════════════════════════════════╗
-         💳 <b>BUY CREDITS - NAGAD</b>
-╚══════════════════════════════════╝
-
-🔥 <b>প্যাকেজ রেট:</b>
-• ১০ ক্রেডিট = ৫০ ৳
-• ২৫ ক্রেডিট = ১০০ ৳
-• ৬০ ক্রেডিট = ২০০ ৳
-
-📌 <b>Nagad Personal (Send Money):</b>
-<code>01726836941</code>
-
-টাকা পাঠিয়ে নিচে <b>TrxID</b> লিখে রিপ্লাই দিন:"""
-    msg = bot.send_message(user_id, payment_info, parse_mode="HTML")
-    bot.register_next_step_handler(msg, receive_trx_id)
-
-  elif call.data.startswith("aprv_"):
-    parts = call.data.split("_")
-    amount = int(parts[1])
-    target_user = int(parts[2])
-
-    update_credits(target_user, amount)
-    try:
-      bot.send_message(
-          target_user,
-          f"🎉 <b>পেমেন্ট কনফার্ম হয়েছে!</b>\nআপনার একাউন্টে <b>+{amount}"
-          " ক্রেডিট</b> যোগ হয়েছে।",
-          parse_mode="HTML",
-      )
-    except:
-      pass
-    bot.edit_message_text(
-        f"✅ <b>Approved {amount} Credits for:</b> <code>{target_user}</code>",
-        chat_id=call.message.chat.id,
-        message_id=call.message.message_id,
-        parse_mode="HTML",
-    )
-
-
-def receive_trx_id(message):
-  user_id = message.from_user.id
-  trx = message.text.strip()
-
-  bot.send_message(
-      user_id,
-      "✅ <b>TrxID পাওয়া গেছে!</b> অ্যাডমিন ভেরিফাই করে ক্রেডিট দিয়ে দেবে।",
-      parse_mode="HTML",
-  )
-
-  markup = types.InlineKeyboardMarkup(row_width=2)
-  markup.add(
-      types.InlineKeyboardButton(
-          "+10 Credits", callback_data=f"aprv_10_{user_id}"
-      ),
-      types.InlineKeyboardButton(
-          "+25 Credits", callback_data=f"aprv_25_{user_id}"
-      ),
-      types.InlineKeyboardButton(
-          "+60 Credits", callback_data=f"aprv_60_{user_id}"
-      ),
-  )
-
-  admin_notice = f"""🚨 <b>NEW PAYMENT SUBMITTED</b>
-━━━━━━━━━━━━━━━━━━━━
-👤 User: {message.from_user.first_name} (<code>{user_id}</code>)
-💳 Method: <b>Nagad (01726836941)</b>
-📝 TrxID: <code>{trx}</code>"""
-
-  bot.send_message(
-      ADMIN_ID, admin_notice, parse_mode="HTML", reply_markup=markup
-  )
-
-
-def process_redeem_code(message):
-  user_id = message.from_user.id
-  code = message.text.strip().upper()
-
-  conn = sqlite3.connect("rafim_tools.db")
-  cursor = conn.cursor()
-  cursor.execute(
-      "SELECT reward_credits, used_by FROM promo_codes WHERE code = ?", (code,)
-  )
-  row = cursor.fetchone()
-
-  if row:
-    reward, used_by = row
-    used_list = used_by.split(",") if used_by else []
-
-    if str(user_id) in used_list:
-      bot.send_message(
-          user_id,
-          "❌ <b>ইতিমধ্যে ব্যবহৃত!</b> আপনি আগেই এই কোডটি নিয়েছেন।",
-          parse_mode="HTML",
-      )
     else:
-      used_list.append(str(user_id))
-      new_used_str = ",".join(used_list)
-      cursor.execute(
-          "UPDATE promo_codes SET used_by = ? WHERE code = ?",
-          (new_used_str, code),
-      )
-      cursor.execute(
-          "UPDATE users SET credits = credits + ? WHERE user_id = ?",
-          (reward, user_id),
-      )
-      conn.commit()
-      bot.send_message(
-          user_id,
-          f"🎉 <b>সফল!</b> <code>{code}</code> অ্যাক্টিভেট হয়েছে। <b>+{reward}"
-          " ক্রেডিট</b> যোগ হয়েছে!",
-          parse_mode="HTML",
-      )
-  else:
-    bot.send_message(
-        user_id, "❌ <b>ভুল রিডিম কোড!</b> সঠিক কোড দিন।", parse_mode="HTML"
+        cur.execute("""
+        UPDATE users
+        SET messages=messages+1,
+            last_active=?
+        WHERE user_id=?
+        """, (now, user.id))
+
+    con.commit()
+    con.close()
+
+
+def get_user(user_id):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute(
+        "SELECT * FROM users WHERE user_id=?",
+        (user_id,)
     )
 
-  conn.close()
+    result = cur.fetchone()
+
+    con.close()
+
+    return result
+
+
+def add_points(user_id, amount, reason):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    UPDATE users
+    SET points=points+?
+    WHERE user_id=?
+    """, (amount, user_id))
+
+    cur.execute("""
+    INSERT INTO history(user_id,amount,reason,created)
+    VALUES(?,?,?,?)
+    """, (
+        user_id,
+        amount,
+        reason,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+
+    con.commit()
+    con.close()
+
+
+# =========================================================
+# MAIN MENU
+# =========================================================
+
+def main_menu():
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🤖 AI CHAT", callback_data="ai"),
+            InlineKeyboardButton("📚 STUDY", callback_data="study"),
+        ],
+        [
+            InlineKeyboardButton("⏰ REMINDER", callback_data="reminder"),
+            InlineKeyboardButton("📝 NOTES", callback_data="notes"),
+        ],
+        [
+            InlineKeyboardButton("✅ TASKS", callback_data="tasks"),
+            InlineKeyboardButton("🎁 REDEEM", callback_data="redeem"),
+        ],
+        [
+            InlineKeyboardButton("💰 MY POINTS", callback_data="points"),
+            InlineKeyboardButton("🎁 DAILY", callback_data="daily"),
+        ],
+        [
+            InlineKeyboardButton("👥 REFER", callback_data="refer"),
+            InlineKeyboardButton("🏆 LEADERBOARD", callback_data="leaderboard"),
+        ],
+        [
+            InlineKeyboardButton("🏅 ACHIEVEMENTS", callback_data="achievements"),
+            InlineKeyboardButton("🛠 TOOLS", callback_data="tools"),
+        ],
+        [
+            InlineKeyboardButton("🎨 CREATOR", callback_data="creator"),
+            InlineKeyboardButton("👥 GROUP AI", callback_data="groupai"),
+        ],
+        [
+            InlineKeyboardButton("⚙️ SETTINGS", callback_data="settings"),
+            InlineKeyboardButton("❓ HELP", callback_data="help"),
+        ],
+    ]
+
+    return InlineKeyboardMarkup(keyboard)
+
+
+# =========================================================
+# START
+# =========================================================
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user = update.effective_user
+
+    referral_id = 0
+
+    if context.args:
+
+        arg = context.args[0]
+
+        if arg.startswith("ref_"):
+            try:
+                referral_id = int(arg.replace("ref_", ""))
+            except:
+                referral_id = 0
+
+    register_user(user, referral_id)
+
+    text = f"""
+╔══════════════════════╗
+       🤖 SUPER BOT
+╚══════════════════════╝
+
+👋 Hello, {user.first_name}!
+
+🚀 Welcome to your all-in-one Super Bot.
+
+✨ এখানে তুমি পাবে:
+
+🤖 AI Assistant
+📚 Study Helper
+⏰ Smart Reminder
+📝 Personal Notes
+✅ Task Manager
+🎁 Redeem Rewards
+💰 Points System
+👥 Referral System
+🎁 Daily Reward
+🏆 Leaderboard
+🏅 Achievements
+🎨 Creator Tools
+👥 Group AI
+🛠 Useful Tools
+⚙️ Settings
+
+👇 নিচের Menu থেকে একটি অপশন নির্বাচন করো।
+"""
+
+    await update.message.reply_text(
+        text,
+        reply_markup=main_menu()
+    )
+
+
+# =========================================================
+# CALLBACK MENU
+# =========================================================
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    if query.data == "ai":
+
+        await query.message.reply_text(
+            "🤖 AI CHAT\n\n"
+            "আমাকে যেকোনো প্রশ্ন লিখে পাঠাও।\n\n"
+            "উদাহরণ:\n"
+            "• Python কী?\n"
+            "• একটা গল্প লিখো\n"
+            "• Math বুঝিয়ে দাও\n\n"
+            "ℹ️ AI API যুক্ত করলে এখানে real AI response চালু করা যাবে।"
+        )
+
+    elif query.data == "study":
+
+        await query.message.reply_text(
+            "📚 STUDY MODE\n\n"
+            "আমি তোমার পড়াশোনার কাজে সাহায্য করতে পারি।\n\n"
+            "উদাহরণ:\n"
+            "/study Photosynthesis\n"
+            "/study Newton's laws"
+        )
+
+    elif query.data == "reminder":
+
+        await query.message.reply_text(
+            "⏰ REMINDER\n\n"
+            "ব্যবহার:\n"
+            "/remind 10m পানি খাও\n"
+            "/remind 1h পড়তে বসো\n\n"
+            "m = minute\n"
+            "h = hour"
+        )
+
+    elif query.data == "notes":
+
+        await query.message.reply_text(
+            "📝 NOTES\n\n"
+            "/note তোমার লেখা\n"
+            "/notes\n\n"
+            "নোট মুছতে চাইলে পরে ID ব্যবহার করা যাবে।"
+        )
+
+    elif query.data == "tasks":
+
+        await query.message.reply_text(
+            "✅ TASK MANAGER\n\n"
+            "/task Homework করা\n"
+            "/tasks\n"
+            "/taskdone ID"
+        )
+
+    elif query.data == "redeem":
+
+        await query.message.reply_text(
+            "🎁 REDEEM\n\n"
+            "Admin থেকে পাওয়া code ব্যবহার করো:\n\n"
+            "/redeem CODE"
+        )
+
+    elif query.data == "points":
+
+        user = get_user(user_id)
+
+        points = user[5] if user else 0
+
+        await query.message.reply_text(
+            f"💰 YOUR POINTS\n\n"
+            f"⭐ Points: {points}\n\n"
+            f"Points সংগ্রহ করতে Daily Reward ও Referral ব্যবহার করো।"
+        )
+
+    elif query.data == "daily":
+
+        await daily(update, context, from_button=True)
+
+    elif query.data == "refer":
+
+        me = await context.bot.get_me()
+
+        link = f"https://t.me/{me.username}?start=ref_{user_id}"
+
+        await query.message.reply_text(
+            "👥 REFERRAL SYSTEM\n\n"
+            "তোমার Referral Link:\n\n"
+            f"{link}\n\n"
+            "🎁 Valid referral = 50 points"
+        )
+
+    elif query.data == "leaderboard":
+
+        con = db()
+        cur = con.cursor()
+
+        cur.execute("""
+        SELECT name, points
+        FROM users
+        ORDER BY points DESC
+        LIMIT 10
+        """)
+
+        rows = cur.fetchall()
+        con.close()
+
+        text = "🏆 LEADERBOARD\n\n"
+
+        if not rows:
+            text += "এখনো কেউ নেই।"
+
+        for i, row in enumerate(rows, 1):
+            text += f"{i}. {row[0]} — ⭐ {row[1]}\n"
+
+        await query.message.reply_text(text)
+
+    elif query.data == "achievements":
+
+        con = db()
+        cur = con.cursor()
+
+        cur.execute("""
+        SELECT achievement
+        FROM achievements
+        WHERE user_id=?
+        """, (user_id,))
+
+        rows = cur.fetchall()
+        con.close()
+
+        if not rows:
+            text = "🏅 এখনো কোনো achievement unlock হয়নি।"
+        else:
+            text = "🏅 YOUR ACHIEVEMENTS\n\n"
+
+            for row in rows:
+                text += f"🏆 {row[0]}\n"
+
+        await query.message.reply_text(text)
+
+    elif query.data == "tools":
+
+        await query.message.reply_text(
+            "🛠 TOOLS\n\n"
+            "🔹 /id — তোমার Telegram ID\n"
+            "🔹 /history — Points history\n"
+            "🔹 /feedback — Feedback পাঠাও\n"
+            "🔹 /stats — নিজের stats"
+        )
+
+    elif query.data == "creator":
+
+        await query.message.reply_text(
+            "🎨 CREATOR TOOLS\n\n"
+            "এখানে ভবিষ্যতে থাকবে:\n"
+            "🖼 Caption Generator\n"
+            "✍️ Bio Generator\n"
+            "📢 Post Generator\n"
+            "🎬 Video Idea Generator\n"
+            "📝 Hashtag Generator"
+        )
+
+    elif query.data == "groupai":
+
+        await query.message.reply_text(
+            "👥 GROUP AI\n\n"
+            "Group-এ আমাকে mention করলে AI assistant হিসেবে ব্যবহার করা যাবে।\n\n"
+            "উদাহরণ:\n"
+            "@YourBot Python কী?"
+        )
+
+    elif query.data == "settings":
+
+        await query.message.reply_text(
+            "⚙️ SETTINGS\n\n"
+            "Settings system এখানে রাখা হয়েছে।\n"
+            "ভবিষ্যতে language, notifications ও theme যোগ করা যাবে।"
+        )
+
+    elif query.data == "help":
+
+        await query.message.reply_text(
+            "❓ SUPER BOT HELP\n\n"
+            "/start — Main Menu\n"
+            "/daily — Daily reward\n"
+            "/redeem CODE — Redeem\n"
+            "/note TEXT — Save note\n"
+            "/notes — Show notes\n"
+            "/task TEXT — Add task\n"
+            "/tasks — Show tasks\n"
+            "/taskdone ID — Complete task\n"
+            "/remind 10m TEXT — Reminder\n"
+            "/points — Points\n"
+            "/history — History\n"
+            "/refer — Referral\n"
+            "/leaderboard — Leaderboard\n"
+            "/id — Telegram ID\n"
+            "/feedback TEXT — Feedback"
+        )
+
+
+# =========================================================
+# DAILY REWARD
+# =========================================================
+
+async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE, from_button=False):
+
+    user_id = update.effective_user.id
+
+    user = get_user(user_id)
+
+    if not user:
+        return
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    if user[9] == today:
+
+        text = "🎁 আজকের Daily Reward তুমি ইতিমধ্যে নিয়েছো।"
+
+    else:
+
+        streak = user[7] + 1
+
+        reward = 20 + min(streak * 5, 50)
+
+        con = db()
+        cur = con.cursor()
+
+        cur.execute("""
+        UPDATE users
+        SET points=points+?,
+            streak=?,
+            last_daily=?
+        WHERE user_id=?
+        """, (
+            reward,
+            streak,
+            today,
+            user_id
+        ))
+
+        cur.execute("""
+        INSERT INTO history(user_id,amount,reason,created)
+        VALUES(?,?,?,?)
+        """, (
+            user_id,
+            reward,
+            "Daily reward",
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        ))
+
+        con.commit()
+        con.close()
+
+        text = (
+            "🎁 DAILY REWARD\n\n"
+            f"⭐ +{reward} Points\n"
+            f"🔥 Streak: {streak}\n\n"
+            "আগামীকাল আবার Daily Reward নিতে পারো।"
+        )
+
+    if from_button:
+
+        await update.callback_query.message.reply_text(text)
+
+    else:
+
+        await update.message.reply_text(text)
+
+
+# =========================================================
+# POINTS
+# =========================================================
+
+async def points(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    register_user(update.effective_user)
+
+    user = get_user(update.effective_user.id)
+
+    await update.message.reply_text(
+        f"💰 YOUR POINTS\n\n"
+        f"⭐ Points: {user[5]}\n"
+        f"👥 Referrals: {user[6]}\n"
+        f"🔥 Streak: {user[7]}"
+    )
+
+
+# =========================================================
+# REFERRAL
+# =========================================================
+
+async def refer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user_id = update.effective_user.id
+
+    me = await context.bot.get_me()
+
+    link = f"https://t.me/{me.username}?start=ref_{user_id}"
+
+    await update.message.reply_text(
+        "👥 YOUR REFERRAL LINK\n\n"
+        f"{link}\n\n"
+        "🎁 প্রতি valid referral-এ 50 points পাওয়া যাবে।"
+    )
+
+
+# =========================================================
+# REDEEM
+# =========================================================
+
+async def redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "🎁 ব্যবহার:\n/redeem CODE"
+        )
+        return
+
+    code = context.args[0].upper()
+
+    user_id = update.effective_user.id
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute(
+        "SELECT points, uses, used FROM redeem_codes WHERE code=?",
+        (code,)
+    )
+
+    row = cur.fetchone()
+
+    if not row:
+
+        con.close()
+
+        await update.message.reply_text(
+            "❌ এই redeem code পাওয়া যায়নি।"
+        )
+
+        return
+
+    points_value, uses, used = row
+
+    if used >= uses:
+
+        con.close()
+
+        await update.message.reply_text(
+            "❌ এই code-এর সব ব্যবহার শেষ।"
+        )
+
+        return
+
+    cur.execute("""
+    SELECT 1
+    FROM redeemed
+    WHERE user_id=? AND code=?
+    """, (
+        user_id,
+        code
+    ))
+
+    if cur.fetchone():
+
+        con.close()
+
+        await update.message.reply_text(
+            "❌ তুমি এই code আগে ব্যবহার করেছো।"
+        )
+
+        return
+
+    cur.execute("""
+    INSERT INTO redeemed(user_id,code)
+    VALUES(?,?)
+    """, (
+        user_id,
+        code
+    ))
+
+    cur.execute("""
+    UPDATE redeem_codes
+    SET used=used+1
+    WHERE code=?
+    """, (code,))
+
+    cur.execute("""
+    UPDATE users
+    SET points=points+?
+    WHERE user_id=?
+    """, (
+        points_value,
+        user_id
+    ))
+
+    cur.execute("""
+    INSERT INTO history(user_id,amount,reason,created)
+    VALUES(?,?,?,?)
+    """, (
+        user_id,
+        points_value,
+        f"Redeemed {code}",
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+
+    con.commit()
+    con.close()
+
+    await update.message.reply_text(
+        f"🎉 Redeem Successful!\n\n"
+        f"🎁 Code: {code}\n"
+        f"⭐ +{points_value} Points"
+    )
+
+
+# =========================================================
+# ADMIN ADD CODE
+# =========================================================
+
+async def addcode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        await update.message.reply_text("⛔ Admin only.")
+
+        return
+
+    if len(context.args) < 2:
+
+        await update.message.reply_text(
+            "/addcode CODE POINTS [USES]\n\n"
+            "Example:\n"
+            "/addcode WELCOME100 100 10"
+        )
+
+        return
+
+    code = context.args[0].upper()
+
+    try:
+        point_value = int(context.args[1])
+        uses = int(context.args[2]) if len(context.args) >= 3 else 1
+    except:
+
+        await update.message.reply_text(
+            "❌ Points/uses অবশ্যই number হতে হবে।"
+        )
+
+        return
+
+    con = db()
+    cur = con.cursor()
+
+    try:
+
+        cur.execute("""
+        INSERT INTO redeem_codes(code,points,uses,used)
+        VALUES(?,?,?,0)
+        """, (
+            code,
+            point_value,
+            uses
+        ))
+
+        con.commit()
+
+        await update.message.reply_text(
+            f"✅ Redeem code তৈরি হয়েছে!\n\n"
+            f"Code: {code}\n"
+            f"Points: {point_value}\n"
+            f"Uses: {uses}"
+        )
+
+    except sqlite3.IntegrityError:
+
+        await update.message.reply_text(
+            "❌ এই code আগে থেকেই আছে।"
+        )
+
+    finally:
+
+        con.close()
+
+
+# =========================================================
+# NOTES
+# =========================================================
+
+async def note(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "/note তোমার note লিখো"
+        )
+
+        return
+
+    text_value = " ".join(context.args)
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    INSERT INTO notes(user_id,text,created)
+    VALUES(?,?,?)
+    """, (
+        update.effective_user.id,
+        text_value,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+
+    con.commit()
+    con.close()
+
+    await update.message.reply_text(
+        "📝 Note saved successfully!"
+    )
+
+
+async def notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    SELECT id,text,created
+    FROM notes
+    WHERE user_id=?
+    ORDER BY id DESC
+    LIMIT 20
+    """, (
+        update.effective_user.id,
+    ))
+
+    rows = cur.fetchall()
+
+    con.close()
+
+    if not rows:
+
+        await update.message.reply_text(
+            "📝 তোমার কোনো note নেই।"
+        )
+
+        return
+
+    text = "📝 YOUR NOTES\n\n"
+
+    for row in rows:
+
+        text += f"#{row[0]} — {row[1]}\n"
+
+    await update.message.reply_text(text)
+
+
+# =========================================================
+# TASKS
+# =========================================================
+
+async def task(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "/task তোমার task লিখো"
+        )
+
+        return
+
+    task_text = " ".join(context.args)
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    INSERT INTO tasks(user_id,text,done,created)
+    VALUES(?,?,0,?)
+    """, (
+        update.effective_user.id,
+        task_text,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+
+    con.commit()
+    con.close()
+
+    await update.message.reply_text(
+        "✅ Task added!"
+    )
+
+
+async def tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    SELECT id,text,done
+    FROM tasks
+    WHERE user_id=?
+    ORDER BY id DESC
+    LIMIT 30
+    """, (
+        update.effective_user.id,
+    ))
+
+    rows = cur.fetchall()
+
+    con.close()
+
+    if not rows:
+
+        await update.message.reply_text(
+            "✅ কোনো task নেই।"
+        )
+
+        return
+
+    text = "✅ YOUR TASKS\n\n"
+
+    for row in rows:
+
+        status = "✅" if row[2] else "⏳"
+
+        text += f"{status} #{row[0]} — {row[1]}\n"
+
+    await update.message.reply_text(text)
+
+
+async def taskdone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "/taskdone ID"
+        )
+
+        return
+
+    try:
+        task_id = int(context.args[0])
+    except:
+
+        await update.message.reply_text(
+            "❌ ID number হতে হবে।"
+        )
+
+        return
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    UPDATE tasks
+    SET done=1
+    WHERE id=? AND user_id=?
+    """, (
+        task_id,
+        update.effective_user.id
+    ))
+
+    con.commit()
+
+    changed = cur.rowcount
+
+    con.close()
+
+    if changed:
+
+        await update.message.reply_text(
+            "🎉 Task completed!"
+        )
+
+    else:
+
+        await update.message.reply_text(
+            "❌ Task পাওয়া যায়নি।"
+        )
+
+
+# =========================================================
+# REMINDER
+# =========================================================
+
+def parse_time(value):
+
+    try:
+
+        if value.endswith("m"):
+
+            return int(value[:-1]) * 60
+
+        if value.endswith("h"):
+
+            return int(value[:-1]) * 3600
+
+        if value.endswith("s"):
+
+            return int(value[:-1])
+
+    except:
+
+        return None
+
+    return None
+
+
+async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
+
+    job = context.job
+
+    await context.bot.send_message(
+        chat_id=job.chat_id,
+        text=f"⏰ REMINDER\n\n{job.data}"
+    )
+
+
+async def remind(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if len(context.args) < 2:
+
+        await update.message.reply_text(
+            "ব্যবহার:\n"
+            "/remind 10m পানি খাও\n"
+            "/remind 1h পড়তে বসো"
+        )
+
+        return
+
+    seconds = parse_time(context.args[0])
+
+    if not seconds:
+
+        await update.message.reply_text(
+            "❌ সময় সঠিক নয়। উদাহরণ: 10m বা 1h"
+        )
+
+        return
+
+    text_value = " ".join(context.args[1:])
+
+    context.job_queue.run_once(
+        reminder_job,
+        seconds,
+        chat_id=update.effective_chat.id,
+        data=text_value
+    )
+
+    await update.message.reply_text(
+        f"⏰ Reminder set!\n\n"
+        f"সময়: {context.args[0]}\n"
+        f"কাজ: {text_value}"
+    )
+
+
+# =========================================================
+# HISTORY
+# =========================================================
+
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    SELECT amount,reason,created
+    FROM history
+    WHERE user_id=?
+    ORDER BY id DESC
+    LIMIT 20
+    """, (
+        update.effective_user.id,
+    ))
+
+    rows = cur.fetchall()
+
+    con.close()
+
+    if not rows:
+
+        await update.message.reply_text(
+            "📜 কোনো point history নেই।"
+        )
+
+        return
+
+    text = "📜 POINT HISTORY\n\n"
+
+    for amount, reason, created in rows:
+
+        sign = "+" if amount >= 0 else ""
+
+        text += f"{sign}{amount} ⭐ — {reason}\n"
+
+    await update.message.reply_text(text)
+
+
+# =========================================================
+# LEADERBOARD
+# =========================================================
+
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    SELECT name,points
+    FROM users
+    ORDER BY points DESC
+    LIMIT 10
+    """)
+
+    rows = cur.fetchall()
+
+    con.close()
+
+    text = "🏆 TOP USERS\n\n"
+
+    for i, row in enumerate(rows, 1):
+
+        text += f"{i}. {row[0]} — ⭐ {row[1]}\n"
+
+    await update.message.reply_text(text)
+
+
+# =========================================================
+# USER ID
+# =========================================================
+
+async def userid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    await update.message.reply_text(
+        f"🆔 Your Telegram ID:\n\n"
+        f"`{update.effective_user.id}`",
+        parse_mode="Markdown"
+    )
+
+
+# =========================================================
+# FEEDBACK
+# =========================================================
+
+async def feedback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not context.args:
+
+        await update.message.reply_text(
+            "/feedback তোমার feedback লিখো"
+        )
+
+        return
+
+    text_value = " ".join(context.args)
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    INSERT INTO feedback(user_id,text,created)
+    VALUES(?,?,?)
+    """, (
+        update.effective_user.id,
+        text_value,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+
+    con.commit()
+    con.close()
+
+    await update.message.reply_text(
+        "❤️ তোমার feedback নেওয়া হয়েছে। ধন্যবাদ!"
+    )
+
+
+# =========================================================
+# ADMIN PANEL
+# =========================================================
+
+async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if update.effective_user.id != ADMIN_ID:
+
+        await update.message.reply_text(
+            "⛔ এই command শুধু Admin-এর জন্য।"
+        )
+
+        return
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("SELECT COUNT(*) FROM users")
+    total_users = cur.fetchone()[0]
+
+    cur.execute("SELECT SUM(points) FROM users")
+    total_points = cur.fetchone()[0] or 0
+
+    con.close()
+
+    await update.message.reply_text(
+        "👑 ADMIN PANEL\n\n"
+        f"👥 Users: {total_users}\n"
+        f"⭐ Total Points: {total_points}\n\n"
+        "🎁 Redeem code তৈরি:\n"
+        "/addcode CODE POINTS USES\n\n"
+        "Example:\n"
+        "/addcode SUPER100 100 10"
+    )
+
+
+# =========================================================
+# USER STATS
+# =========================================================
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    user = get_user(update.effective_user.id)
+
+    if not user:
+
+        await update.message.reply_text(
+            "❌ User profile পাওয়া যায়নি।"
+        )
+
+        return
+
+    await update.message.reply_text(
+        "📊 YOUR STATS\n\n"
+        f"👤 Name: {user[1]}\n"
+        f"💬 Messages: {user[4]}\n"
+        f"⭐ Points: {user[5]}\n"
+        f"👥 Referrals: {user[6]}\n"
+        f"🔥 Streak: {user[7]}"
+    )
+
+
+# =========================================================
+# TEXT / GROUP AI PLACEHOLDER
+# =========================================================
+
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    if not update.message:
+        return
+
+    user = update.effective_user
+
+    register_user(user)
+
+    text_value = update.message.text or ""
+
+    # Group mention detection
+    if update.effective_chat.type in ["group", "supergroup"]:
+
+        me = await context.bot.get_me()
+
+        if f"@{me.username}".lower() not in text_value.lower():
+
+            return
+
+        clean = text_value.replace(
+            f"@{me.username}",
+            ""
+        ).strip()
+
+        await update.message.reply_text(
+            "🤖 Super Bot received your message!\n\n"
+            f"💬 You said:\n{clean}\n\n"
+            "ℹ️ Real AI response চালু করতে AI provider API যুক্ত করতে হবে।"
+        )
+
+        return
+
+    # Private chat
+    await update.message.reply_text(
+        "🤖 SUPER BOT\n\n"
+        "তোমার message পেয়েছি!\n\n"
+        "AI Chat ব্যবহার করতে নিচের 🤖 AI CHAT button চাপো।"
+    )
+
+
+# =========================================================
+# ERROR HANDLER
+# =========================================================
+
+async def error_handler(update, context):
+
+    logger.error(
+        "Update caused error: %s",
+        context.error
+    )
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    if BOT_TOKEN == "PASTE_YOUR_NEW_BOT_TOKEN_HERE":
+
+        print(
+            "\n❌ BOT TOKEN বসানো হয়নি!\n"
+            "bot.py-এর উপরের BOT_TOKEN লাইনে "
+            "তোমার নতুন BotFather token বসাও।\n"
+        )
+
+        return
+
+    init_db()
+
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
+
+    # Commands
+    application.add_handler(
+        CommandHandler("start", start)
+    )
+
+    application.add_handler(
+        CommandHandler("daily", daily)
+    )
+
+    application.add_handler(
+        CommandHandler("points", points)
+    )
+
+    application.add_handler(
+        CommandHandler("refer", refer)
+    )
+
+    application.add_handler(
+        CommandHandler("redeem", redeem)
+    )
+
+    application.add_handler(
+        CommandHandler("addcode", addcode)
+    )
+
+    application.add_handler(
+        CommandHandler("note", note)
+    )
+
+    application.add_handler(
+        CommandHandler("notes", notes)
+    )
+
+    application.add_handler(
+        CommandHandler("task", task)
+    )
+
+    application.add_handler(
+        CommandHandler("tasks", tasks)
+    )
+
+    application.add_handler(
+        CommandHandler("taskdone", taskdone)
+    )
+
+    application.add_handler(
+        CommandHandler("remind", remind)
+    )
+
+    application.add_handler(
+        CommandHandler("history", history)
+    )
+
+    application.add_handler(
+        CommandHandler("leaderboard", leaderboard)
+    )
+
+    application.add_handler(
+        CommandHandler("id", userid)
+    )
+
+    application.add_handler(
+        CommandHandler("feedback", feedback)
+    )
+
+    application.add_handler(
+        CommandHandler("admin", admin)
+    )
+
+    application.add_handler(
+        CommandHandler("stats", stats)
+    )
+
+    # Buttons
+    application.add_handler(
+        CallbackQueryHandler(button_handler)
+    )
+
+    # Messages
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            text_handler
+        )
+    )
+
+    application.add_error_handler(error_handler)
+
+    print("================================")
+    print("🤖 SUPER BOT IS RUNNING")
+    print("👑 ADMIN ID:", ADMIN_ID)
+    print("================================")
+
+    application.run_polling(
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
-  bot.infinity_polling()
+    main()
