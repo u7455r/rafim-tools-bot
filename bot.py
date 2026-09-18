@@ -24,7 +24,7 @@ from telegram.ext import (
 # SETTINGS
 # =========================================================
 
-BOT_TOKEN = os.getenv(8809150454:AAF3X6KjjQIGQH2w2nYINe8bGVDqB7JMQOk)
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # তোমার Admin/User ID
 ADMIN_ID = 8298133943
