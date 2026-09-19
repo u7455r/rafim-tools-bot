@@ -1,2 +1,4 @@
-python-telegram-bot[job-queue]>=22.0
-Flask>=3.0
+python-telegram-bot>=22.0,<23.0
+Flask>=3.0,<4.0
+PyMuPDF>=1.26,<2.0
+Pillow>=11.0,<13.0
