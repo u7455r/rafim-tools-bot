@@ -1,82 +1,85 @@
 import os
+import io
 import re
 import sqlite3
-import secrets
-import string
-import tempfile
 import shutil
+import tempfile
 import subprocess
 from pathlib import Path
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+
+import fitz  # PyMuPDF
+from PIL import Image
+from docx import Document as DocxDocument
 
 from flask import Flask
 from threading import Thread
 
 from telegram import (
     Update,
-    ReplyKeyboardMarkup,
-    InlineKeyboardMarkup,
     InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
 )
-from telegram.constants import ChatAction
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
+
 
 # =========================================================
 # CONFIG
 # =========================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN environment variable is missing.")
-
-ADMIN_ID = 8298133943
-SUPPORT_USERNAME = "rafimhossen"
-
-BOT_NAME = "Rafim PDF Pro"
-DB_FILE = "rafim_pdf_pro.db"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "8298133943"))
+SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "rafimhossen")
 
 FREE_CREDITS = 10
 DAILY_BONUS = 2
 REFERRAL_BONUS = 5
 
-# Tool costs
-COSTS = {
-    "pdf_txt": 1,
-    "pdf_jpg": 2,
-    "pdf_word": 3,
-    "compress": 2,
-    "merge": 2,
-    "split": 2,
-    "extract": 2,
-    "pdf_xps": 3,
-    "jpg_pdf": 2,
-    "png_pdf": 2,
-    "compress_image": 1,
-}
+DB_FILE = "rafim_pdf_pro.db"
 
-BASE = Path(__file__).resolve().parent
-TMP_DIR = BASE / "tmp"
-TMP_DIR.mkdir(exist_ok=True)
+app_web = Flask(__name__)
+
+
+# =========================================================
+# RENDER HEALTH SERVER
+# =========================================================
+
+@app_web.route("/")
+def home():
+    return "Rafim PDF Pro is running ✅"
+
+
+@app_web.route("/health")
+def health():
+    return "OK"
+
+
+def run_web():
+    port = int(os.getenv("PORT", "10000"))
+    app_web.run(host="0.0.0.0", port=port)
+
 
 # =========================================================
 # DATABASE
 # =========================================================
 
 def db():
-    con = sqlite3.connect(DB_FILE)
-    con.row_factory = sqlite3.Row
-    return con
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def init_db():
-    con = db()
-    cur = con.cursor()
+    conn = db()
+    cur = conn.cursor()
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -84,13 +87,11 @@ def init_db():
             username TEXT,
             first_name TEXT,
             credits INTEGER DEFAULT 10,
-            premium_credits INTEGER DEFAULT 0,
-            plan TEXT DEFAULT 'FREE',
+            premium_until TEXT,
+            last_bonus TEXT,
             referred_by INTEGER,
-            referrals INTEGER DEFAULT 0,
-            total_used INTEGER DEFAULT 0,
-            last_daily TEXT,
-            joined_at TEXT
+            referral_count INTEGER DEFAULT 0,
+            created_at TEXT
         )
     """)
 
@@ -107,12 +108,10 @@ def init_db():
 
     cur.execute("""
         CREATE TABLE IF NOT EXISTS redemptions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            code TEXT,
             user_id INTEGER,
-            credits INTEGER,
+            code TEXT,
             redeemed_at TEXT,
-            UNIQUE(code, user_id)
+            PRIMARY KEY(user_id, code)
         )
     """)
 
@@ -121,135 +120,101 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             tool TEXT,
-            cost INTEGER,
             created_at TEXT
         )
     """)
 
-    con.commit()
-    con.close()
+    conn.commit()
+    conn.close()
 
 
-def ensure_user(tg_user, referred_by=None):
-    con = db()
-    cur = con.cursor()
+def ensure_user(user):
+    conn = db()
+    cur = conn.cursor()
 
     row = cur.execute(
-        "SELECT * FROM users WHERE user_id=?",
-        (tg_user.id,)
+        "SELECT user_id FROM users WHERE user_id=?",
+        (user.id,)
     ).fetchone()
 
-    if row:
+    if not row:
+        cur.execute("""
+            INSERT INTO users
+            (user_id, username, first_name, credits, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            user.id,
+            user.username or "",
+            user.first_name or "",
+            FREE_CREDITS,
+            datetime.utcnow().isoformat()
+        ))
+    else:
         cur.execute("""
             UPDATE users
             SET username=?, first_name=?
             WHERE user_id=?
         """, (
-            tg_user.username or "",
-            tg_user.first_name or "",
-            tg_user.id
+            user.username or "",
+            user.first_name or "",
+            user.id
         ))
-        con.commit()
-        con.close()
-        return False
 
-    now = datetime.utcnow().isoformat()
-
-    cur.execute("""
-        INSERT INTO users
-        (user_id, username, first_name, credits, joined_at, referred_by)
-        VALUES (?, ?, ?, ?, ?, ?)
-    """, (
-        tg_user.id,
-        tg_user.username or "",
-        tg_user.first_name or "",
-        FREE_CREDITS,
-        now,
-        referred_by
-    ))
-
-    # Referral reward
-    if referred_by and referred_by != tg_user.id:
-        parent = cur.execute(
-            "SELECT user_id FROM users WHERE user_id=?",
-            (referred_by,)
-        ).fetchone()
-
-        if parent:
-            cur.execute("""
-                UPDATE users
-                SET credits=credits+?, referrals=referrals+1
-                WHERE user_id=?
-            """, (REFERRAL_BONUS, referred_by))
-
-    con.commit()
-    con.close()
-    return True
+    conn.commit()
+    conn.close()
 
 
 def get_user(user_id):
-    con = db()
-    row = con.execute(
+    conn = db()
+    row = conn.execute(
         "SELECT * FROM users WHERE user_id=?",
         (user_id,)
     ).fetchone()
-    con.close()
+    conn.close()
     return row
 
 
-def spend_credit(user_id, cost):
-    con = db()
-    cur = con.cursor()
+def add_credits(user_id, amount):
+    conn = db()
+    conn.execute(
+        "UPDATE users SET credits=credits+? WHERE user_id=?",
+        (amount, user_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def spend_credit(user_id, amount=1):
+    conn = db()
+    cur = conn.cursor()
 
     row = cur.execute(
-        "SELECT credits, premium_credits FROM users WHERE user_id=?",
+        "SELECT credits FROM users WHERE user_id=?",
         (user_id,)
     ).fetchone()
 
-    if not row:
-        con.close()
+    if not row or row["credits"] < amount:
+        conn.close()
         return False
 
-    total = row["credits"] + row["premium_credits"]
+    cur.execute(
+        "UPDATE users SET credits=credits-? WHERE user_id=?",
+        (amount, user_id)
+    )
 
-    if total < cost:
-        con.close()
-        return False
-
-    normal = row["credits"]
-    premium = row["premium_credits"]
-
-    if normal >= cost:
-        normal -= cost
-    else:
-        remaining = cost - normal
-        normal = 0
-        premium -= remaining
-
-    cur.execute("""
-        UPDATE users
-        SET credits=?, premium_credits=?, total_used=total_used+?
-        WHERE user_id=?
-    """, (normal, premium, cost, user_id))
-
-    con.commit()
-    con.close()
+    conn.commit()
+    conn.close()
     return True
 
 
-def log_usage(user_id, tool, cost):
-    con = db()
-    con.execute("""
-        INSERT INTO usage(user_id, tool, cost, created_at)
-        VALUES (?, ?, ?, ?)
-    """, (
-        user_id,
-        tool,
-        cost,
-        datetime.utcnow().isoformat()
-    ))
-    con.commit()
-    con.close()
+def log_usage(user_id, tool):
+    conn = db()
+    conn.execute(
+        "INSERT INTO usage(user_id, tool, created_at) VALUES (?, ?, ?)",
+        (user_id, tool, datetime.utcnow().isoformat())
+    )
+    conn.commit()
+    conn.close()
 
 
 # =========================================================
@@ -259,78 +224,132 @@ def log_usage(user_id, tool, cost):
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         ["📄 PDF Tools", "🖼️ Image Tools"],
-        ["💎 Premium", "👤 My Account"],
-        ["🎁 Daily Bonus", "👥 Refer & Earn"],
-        ["🎟️ Redeem Code", "📊 History"],
-        ["🆘 Support"],
+        ["⭐ Premium", "👤 My Account"],
+        ["🎁 Daily Bonus", "🎉 Refer & Earn"],
+        ["🎟️ Redeem Code", "📜 History"],
+        ["💬 Support"],
     ],
     resize_keyboard=True,
     is_persistent=True
 )
 
+
+def back_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅️ Back", callback_data="main")]
+    ])
+
+
 PDF_KEYBOARD = InlineKeyboardMarkup([
     [
-        InlineKeyboardButton("🔄 PDF → Word", callback_data="pdf_word"),
-        InlineKeyboardButton("📝 PDF → TXT", callback_data="pdf_txt"),
+        InlineKeyboardButton("📕 PDF → Word", callback_data="pdf_word"),
+        InlineKeyboardButton("📝 PDF → TXT", callback_data="pdf_txt")
     ],
     [
         InlineKeyboardButton("🖼️ PDF → JPG", callback_data="pdf_jpg"),
-        InlineKeyboardButton("📦 Compress PDF", callback_data="compress"),
+        InlineKeyboardButton("🖼️ PDF → PNG", callback_data="pdf_png")
     ],
     [
-        InlineKeyboardButton("🔗 Merge PDF", callback_data="merge"),
-        InlineKeyboardButton("✂️ Split PDF", callback_data="split"),
+        InlineKeyboardButton("🗜️ Compress PDF", callback_data="pdf_compress"),
+        InlineKeyboardButton("🔗 Merge PDF", callback_data="pdf_merge")
     ],
     [
-        InlineKeyboardButton("📑 Extract Pages", callback_data="extract"),
-        InlineKeyboardButton("🔄 PDF → XPS", callback_data="pdf_xps"),
+        InlineKeyboardButton("✂️ Split PDF", callback_data="pdf_split"),
+        InlineKeyboardButton("📑 Extract Pages", callback_data="pdf_extract")
     ],
     [
-        InlineKeyboardButton("⬅️ Back", callback_data="back_main")
+        InlineKeyboardButton("📦 PDF → XPS", callback_data="pdf_xps"),
+        InlineKeyboardButton("🔐 Protect PDF", callback_data="pdf_protect")
+    ],
+    [
+        InlineKeyboardButton("🔓 Unlock PDF", callback_data="pdf_unlock")
+    ],
+    [
+        InlineKeyboardButton("⬅️ Back", callback_data="main")
     ]
 ])
+
 
 IMAGE_KEYBOARD = InlineKeyboardMarkup([
     [
-        InlineKeyboardButton("📸 JPG → PDF", callback_data="jpg_pdf"),
-        InlineKeyboardButton("🖼️ PNG → PDF", callback_data="png_pdf"),
+        InlineKeyboardButton("📄 JPG/PNG → PDF", callback_data="img_pdf"),
+        InlineKeyboardButton("🗜️ Compress Image", callback_data="img_compress")
     ],
     [
-        InlineKeyboardButton("📦 Compress Image", callback_data="compress_image"),
+        InlineKeyboardButton("🔄 Convert Image", callback_data="img_convert"),
+        InlineKeyboardButton("📐 Resize Image", callback_data="img_resize")
     ],
     [
-        InlineKeyboardButton("⬅️ Back", callback_data="back_main")
+        InlineKeyboardButton("⬅️ Back", callback_data="main")
     ]
 ])
 
 
 # =========================================================
-# TEXT
+# HELPERS
 # =========================================================
 
-WELCOME = """
-🚀✨ <b>WELCOME TO RAFIM PDF PRO</b> ✨🚀
+def safe_name(name):
+    return re.sub(r"[^a-zA-Z0-9_.-]", "_", name)
 
-━━━━━━━━━━━━━━━━━━━━
 
-📄 <b>Your Smart PDF Workspace</b>
+async def send_processing(update, text="⚙️ Processing..."):
+    if update.callback_query:
+        return await update.callback_query.message.reply_text(text)
+    return await update.message.reply_text(text)
 
-⚡ Convert • Merge • Split
-📦 Compress • Extract
-🖼️ PDF → Images
-📝 PDF → Text
-🔄 PDF → XPS
 
-🎁 <b>NEW USER BONUS UNLOCKED!</b>
-💰 You received <b>10 Free Credits</b>.
+async def progress(message, text):
+    try:
+        await message.edit_text(text)
+    except Exception:
+        pass
 
-🔥 Fast • Simple • Powerful
-🛡️ Your files are processed temporarily.
 
-━━━━━━━━━━━━━━━━━━━━
+def temp_dir():
+    return Path(tempfile.mkdtemp(prefix="rafim_pdf_"))
 
-👇 <b>Choose your next action:</b>
-"""
+
+def is_premium(user_id):
+    row = get_user(user_id)
+
+    if not row or not row["premium_until"]:
+        return False
+
+    try:
+        return datetime.fromisoformat(
+            row["premium_until"]
+        ) > datetime.utcnow()
+    except Exception:
+        return False
+
+
+def tool_cost(tool):
+    return {
+        "PDF → Word": 2,
+        "PDF → TXT": 1,
+        "PDF → JPG": 1,
+        "PDF → PNG": 1,
+        "Compress PDF": 2,
+        "Merge PDF": 2,
+        "Split PDF": 2,
+        "Extract Pages": 2,
+        "PDF → XPS": 2,
+        "Protect PDF": 2,
+        "Unlock PDF": 2,
+        "Image → PDF": 1,
+        "Compress Image": 1,
+        "Convert Image": 1,
+        "Resize Image": 1,
+    }.get(tool, 1)
+
+
+def check_cost(user_id, tool):
+    if is_premium(user_id):
+        return True
+
+    row = get_user(user_id)
+    return row and row["credits"] >= tool_cost(tool)
 
 
 # =========================================================
@@ -338,79 +357,127 @@ WELCOME = """
 # =========================================================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user)
+
+    # Referral
     args = context.args
-    referred_by = None
 
     if args:
         try:
-            referred_by = int(args[0])
-        except ValueError:
-            referred_by = None
+            ref_id = int(args[0])
 
-    new_user = ensure_user(update.effective_user, referred_by)
+            if ref_id != user.id:
+                conn = db()
 
-    if new_user and referred_by and referred_by != update.effective_user.id:
-        await update.message.reply_text(
-            f"🎉 <b>Welcome!</b>\n\n"
-            f"🎁 You received <b>{FREE_CREDITS} Free Credits</b>.\n"
-            f"👥 Your referral was recorded successfully.",
-            parse_mode="HTML"
-        )
+                current = conn.execute(
+                    "SELECT referred_by FROM users WHERE user_id=?",
+                    (user.id,)
+                ).fetchone()
+
+                if current and current["referred_by"] is None:
+                    ref = conn.execute(
+                        "SELECT user_id FROM users WHERE user_id=?",
+                        (ref_id,)
+                    ).fetchone()
+
+                    if ref:
+                        conn.execute("""
+                            UPDATE users
+                            SET referred_by=?
+                            WHERE user_id=?
+                        """, (ref_id, user.id))
+
+                        conn.execute("""
+                            UPDATE users
+                            SET credits=credits+?,
+                                referral_count=referral_count+1
+                            WHERE user_id=?
+                        """, (REFERRAL_BONUS, ref_id))
+
+                        conn.commit()
+
+                conn.close()
+        except Exception:
+            pass
+
+    row = get_user(user.id)
+
+    text = f"""
+✨ <b>Welcome to Rafim PDF Pro</b> ✨
+
+🚀 Your smart PDF & Image utility bot.
+
+📄 PDF Tools
+🖼️ Image Tools
+⭐ Premium
+🎁 Daily Bonus
+🎉 Refer & Earn
+🎟️ Redeem Code
+
+💳 Your Credits: <b>{row["credits"]}</b>
+
+━━━━━━━━━━━━━━━━━━
+⚡ Fast • Simple • Useful
+🔐 Your files are processed temporarily.
+━━━━━━━━━━━━━━━━━━
+"""
 
     await update.message.reply_text(
-        WELCOME,
+        text,
         parse_mode="HTML",
         reply_markup=MAIN_KEYBOARD
     )
 
 
 # =========================================================
-# PDF / IMAGE MENUS
+# MAIN MENU
 # =========================================================
 
-async def show_pdf_tools(message):
-    await message.reply_text(
+async def main_menu(update, context):
+    await update.message.reply_text(
         """
-📄🔥 <b>PDF TOOLBOX UNLOCKED!</b>
+🏠 <b>Rafim PDF Pro</b>
 
-━━━━━━━━━━━━━━━━━━━━
+👇 Choose a service:
 
-🛠️ Everything you need for your PDF.
+📄 PDF Tools
+🖼️ Image Tools
+⭐ Premium
+👤 My Account
+🎁 Daily Bonus
+🎉 Refer & Earn
+🎟️ Redeem Code
+📜 History
+💬 Support
+""",
+        parse_mode="HTML",
+        reply_markup=MAIN_KEYBOARD
+    )
 
-🔄 Convert
-📝 Extract text
-🖼️ Create images
-📦 Compress
-🔗 Merge
-✂️ Split
-🔐 Protect
-🔄 XPS conversion
 
-💰 <b>Credit cost is shown before processing.</b>
+async def pdf_tools(update, context):
+    await update.message.reply_text(
+        """
+📄 <b>PDF TOOLS</b>
 
-👇 <b>Select a tool:</b>
+Choose what you want to do 👇
+
+⚡ Professional PDF utilities
+🔐 Secure processing
+🚀 Fast conversion
 """,
         parse_mode="HTML",
         reply_markup=PDF_KEYBOARD
     )
 
 
-async def show_image_tools(message):
-    await message.reply_text(
+async def image_tools(update, context):
+    await update.message.reply_text(
         """
-🖼️✨ <b>IMAGE WORKSHOP</b>
+🖼️ <b>IMAGE TOOLS</b>
 
-━━━━━━━━━━━━━━━━━━━━
-
-📸 Turn images into useful documents.
-
-📄 JPG → PDF
-📄 PNG → PDF
-📦 Compress images
-
-⚡ Simple • Fast • Clean
-
-👇 <b>Select a tool:</b>
+Choose an image operation 👇
 """,
         parse_mode="HTML",
         reply_markup=IMAGE_KEYBOARD
@@ -421,31 +488,25 @@ async def show_image_tools(message):
 # ACCOUNT
 # =========================================================
 
-async def account(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    u = get_user(update.effective_user.id)
+async def account(update, context):
+    row = get_user(update.effective_user.id)
+
+    premium = "❌ Free"
+
+    if is_premium(update.effective_user.id):
+        premium = f"⭐ Premium until {row['premium_until']}"
 
     await update.message.reply_text(
         f"""
-👤✨ <b>YOUR DIGITAL ACCOUNT</b>
+👤 <b>MY ACCOUNT</b>
 
-━━━━━━━━━━━━━━━━━━━━
+🆔 User ID: <code>{row["user_id"]}</code>
+💳 Credits: <b>{row["credits"]}</b>
+⭐ Plan: {premium}
+🎉 Referrals: <b>{row["referral_count"]}</b>
 
-🆔 User ID:
-<code>{u['user_id']}</code>
-
-🎁 Free Credits: <b>{u['credits']}</b>
-💎 Premium Credits: <b>{u['premium_credits']}</b>
-
-⭐ Plan: <b>{u['plan']}</b>
-📊 Total Used: <b>{u['total_used']}</b>
-👥 Referrals: <b>{u['referrals']}</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-🔥 Keep earning credits with
-🎁 Daily Bonus
-👥 Refer & Earn
-🎟️ Redeem Codes
+━━━━━━━━━━━━━━━━━━
+Rafim PDF Pro
 """,
         parse_mode="HTML"
     )
@@ -455,80 +516,171 @@ async def account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # DAILY BONUS
 # =========================================================
 
-async def daily(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    u = get_user(uid)
+async def daily_bonus(update, context):
+    user_id = update.effective_user.id
+    row = get_user(user_id)
 
     today = date.today().isoformat()
 
-    if u["last_daily"] == today:
+    if row["last_bonus"] == today:
         await update.message.reply_text(
-            """
-⏰🎁 <b>DAILY BONUS ALREADY CLAIMED!</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-✨ You already collected today's reward.
-
-🔄 Come back tomorrow for another bonus!
-""",
+            "⏳ <b>Today's bonus already claimed!</b>\n\nCome back tomorrow 🎁",
             parse_mode="HTML"
         )
         return
 
-    con = db()
-    con.execute("""
+    conn = db()
+
+    conn.execute("""
         UPDATE users
-        SET credits=credits+?, last_daily=?
+        SET credits=credits+?, last_bonus=?
         WHERE user_id=?
-    """, (DAILY_BONUS, today, uid))
-    con.commit()
-    con.close()
+    """, (DAILY_BONUS, today, user_id))
+
+    conn.commit()
+    conn.close()
 
     await update.message.reply_text(
         f"""
-🎉🎁 <b>DAILY BONUS CLAIMED!</b>
+🎁 <b>DAILY BONUS CLAIMED!</b>
 
-━━━━━━━━━━━━━━━━━━━━
+➕ <b>+{DAILY_BONUS} Credits</b>
 
-💰 Reward: <b>+{DAILY_BONUS} Credits</b>
+💳 Your credits have been updated.
 
-🔥 Your balance has been updated.
-
-🚀 Come back tomorrow and claim again!
+Come back tomorrow 🚀
 """,
         parse_mode="HTML"
     )
 
 
 # =========================================================
-# REFERRAL
+# REFER & EARN
 # =========================================================
 
-async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    u = get_user(uid)
+async def referral(update, context):
+    user_id = update.effective_user.id
 
     me = await context.bot.get_me()
-    link = f"https://t.me/{me.username}?start={uid}"
+    link = f"https://t.me/{me.username}?start={user_id}"
+
+    row = get_user(user_id)
 
     await update.message.reply_text(
         f"""
-👥🚀 <b>INVITE • EARN • REPEAT!</b>
+🎉 <b>REFER & EARN</b>
 
-━━━━━━━━━━━━━━━━━━━━
+Invite your friends using your personal link.
 
-🎁 Invite friends and earn
-<b>+{REFERRAL_BONUS} Credits</b> for each valid referral.
-
-👥 Your Referrals: <b>{u['referrals']}</b>
-
-🔗 <b>Your Personal Invite Link:</b>
+🔗 Your link:
 
 <code>{link}</code>
 
-📢 Share it with your friends and grow your balance! 🔥
+🎁 Reward:
+<b>+{REFERRAL_BONUS} credits</b> per successful referral.
+
+👥 Your referrals: <b>{row["referral_count"]}</b>
 """,
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# PREMIUM
+# =========================================================
+
+async def premium(update, context):
+    await update.message.reply_text(
+        """
+⭐ <b>RAFIM PDF PRO PREMIUM</b>
+
+Premium members get:
+
+🚀 Priority processing
+♾️ More usage
+💎 Premium utilities
+📦 Larger workflow support
+
+━━━━━━━━━━━━━━━━━━
+
+💳 Plans
+
+🗓️ Weekly
+🗓️ Monthly
+💳 Credit Packs
+
+Payment integration can be connected later.
+
+💬 Contact Support:
+@rafimhossen
+""",
+        parse_mode="HTML"
+    )
+
+
+# =========================================================
+# SUPPORT
+# =========================================================
+
+async def support(update, context):
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton(
+                "💬 Contact Support",
+                url=f"https://t.me/{SUPPORT_USERNAME}"
+            )
+        ]
+    ])
+
+    await update.message.reply_text(
+        """
+💬 <b>SUPPORT</b>
+
+Need help?
+
+Our support:
+@rafimhossen
+
+Tap the button below 👇
+""",
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
+
+
+# =========================================================
+# HISTORY
+# =========================================================
+
+async def history(update, context):
+    user_id = update.effective_user.id
+
+    conn = db()
+
+    rows = conn.execute("""
+        SELECT tool, created_at
+        FROM usage
+        WHERE user_id=?
+        ORDER BY id DESC
+        LIMIT 10
+    """, (user_id,)).fetchall()
+
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text(
+            "📜 <b>History is empty.</b>\n\nStart using a tool 🚀",
+            parse_mode="HTML"
+        )
+        return
+
+    text = "📜 <b>YOUR RECENT HISTORY</b>\n\n"
+
+    for r in rows:
+        text += f"• {r['tool']}\n"
+
+    await update.message.reply_text(
+        text,
         parse_mode="HTML"
     )
 
@@ -537,115 +689,1235 @@ async def referral(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # REDEEM CODE
 # =========================================================
 
-async def redeem_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["waiting_redeem"] = True
+async def redeem_start(update, context):
+    context.user_data["awaiting_redeem"] = True
 
     await update.message.reply_text(
         """
-🎟️💎 <b>REDEEM CENTER</b>
+🎟️ <b>REDEEM CODE</b>
 
-━━━━━━━━━━━━━━━━━━━━
+Send your redeem code now.
 
-🎁 Have a promotional code?
-
-🔐 Send your code below.
-
-✨ Example:
+Example:
 <code>RAFIM20</code>
 
-💰 If the code is valid, your Credits will be added instantly.
+🔐 Codes are checked automatically.
 """,
         parse_mode="HTML"
     )
 
 
-async def redeem_code(uid, code):
-    code = code.strip().upper()
+async def process_redeem(update, context):
+    user_id = update.effective_user.id
+    code = update.message.text.strip().upper()
 
-    con = db()
-    cur = con.cursor()
+    context.user_data["awaiting_redeem"] = False
 
-    code_row = cur.execute("""
-        SELECT * FROM redeem_codes
+    conn = db()
+
+    row = conn.execute("""
+        SELECT *
+        FROM redeem_codes
         WHERE code=? AND active=1
     """, (code,)).fetchone()
 
-    if not code_row:
-        con.close()
-        return False, "❌ Invalid or inactive redeem code."
+    if not row:
+        conn.close()
 
-    if code_row["used_count"] >= code_row["max_uses"]:
-        con.close()
-        return False, "⛔ This redeem code has reached its maximum uses."
+        await update.message.reply_text(
+            "❌ <b>Invalid or disabled redeem code.</b>",
+            parse_mode="HTML"
+        )
+        return
 
-    already = cur.execute("""
-        SELECT 1 FROM redemptions
-        WHERE code=? AND user_id=?
-    """, (code, uid)).fetchone()
+    if row["used_count"] >= row["max_uses"]:
+        conn.close()
+
+        await update.message.reply_text(
+            "⚠️ <b>This code has reached its maximum uses.</b>",
+            parse_mode="HTML"
+        )
+        return
+
+    already = conn.execute("""
+        SELECT 1
+        FROM redemptions
+        WHERE user_id=? AND code=?
+    """, (user_id, code)).fetchone()
 
     if already:
-        con.close()
-        return False, "⚠️ You have already used this code."
+        conn.close()
 
-    cur.execute("""
-        UPDATE users
-        SET credits=credits+?
-        WHERE user_id=?
-    """, (code_row["credits"], uid))
+        await update.message.reply_text(
+            "⚠️ <b>You have already redeemed this code.</b>",
+            parse_mode="HTML"
+        )
+        return
 
-    cur.execute("""
+    conn.execute("""
+        INSERT INTO redemptions(user_id, code, redeemed_at)
+        VALUES (?, ?, ?)
+    """, (
+        user_id,
+        code,
+        datetime.utcnow().isoformat()
+    ))
+
+    conn.execute("""
         UPDATE redeem_codes
         SET used_count=used_count+1
         WHERE code=?
     """, (code,))
 
-    cur.execute("""
-        INSERT INTO redemptions(code, user_id, credits, redeemed_at)
-        VALUES (?, ?, ?, ?)
-    """, (
-        code,
-        uid,
-        code_row["credits"],
-        datetime.utcnow().isoformat()
-    ))
+    conn.execute("""
+        UPDATE users
+        SET credits=credits+?
+        WHERE user_id=?
+    """, (row["credits"], user_id))
 
-    con.commit()
-    con.close()
+    conn.commit()
+    conn.close()
 
-    return True, (
-        f"🎉 <b>REDEEM SUCCESSFUL!</b>\n\n"
-        f"🎟️ Code: <code>{code}</code>\n"
-        f"💰 Reward: <b>+{code_row['credits']} Credits</b>\n\n"
-        f"🚀 Your balance has been updated!"
+    await update.message.reply_text(
+        f"""
+🎉 <b>REDEEM SUCCESSFUL!</b>
+
+🎟️ Code: <code>{code}</code>
+💳 Reward: <b>+{row["credits"]} credits</b>
+
+🚀 Enjoy Rafim PDF Pro!
+""",
+        parse_mode="HTML"
     )
 
 
 # =========================================================
-# ADMIN REDEEM
+# CALLBACK MENU
 # =========================================================
 
-async def create_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
 
-    if len(context.args) < 2:
-        await update.message.reply_text(
+    data = query.data
+
+    if data == "main":
+        await query.message.edit_text(
             """
-👨‍💼🎟️ <b>Create Redeem Code</b>
+🏠 <b>RAFIM PDF PRO</b>
 
-Format:
+Use the keyboard below to choose a service.
 
-<code>/createcode CODE CREDITS [USES]</code>
-
-Example:
-
-<code>/createcode RAFIM20 20 100</code>
-
-🎁 This creates:
-💰 20 Credits
-👥 Maximum 100 uses
+👇 Select an option:
 """,
             parse_mode="HTML"
+        )
+        return
+
+    if data.startswith("pdf_"):
+        await pdf_callback(query, context, data)
+        return
+
+    if data.startswith("img_"):
+        await image_callback(query, context, data)
+        return
+
+
+# =========================================================
+# PDF CALLBACK
+# =========================================================
+
+PDF_INSTRUCTIONS = {
+    "pdf_word": (
+        "📕 PDF → Word",
+        "Send a PDF file.\n\n⚠️ This creates a text-based DOCX."
+    ),
+    "pdf_txt": (
+        "📝 PDF → TXT",
+        "Send your PDF file."
+    ),
+    "pdf_jpg": (
+        "🖼️ PDF → JPG",
+        "Send your PDF file."
+    ),
+    "pdf_png": (
+        "🖼️ PDF → PNG",
+        "Send your PDF file."
+    ),
+    "pdf_compress": (
+        "🗜️ Compress PDF",
+        "Send your PDF file."
+    ),
+    "pdf_merge": (
+        "🔗 Merge PDF",
+        "Send the first PDF, then send additional PDFs.\n\nWhen finished type /done"
+    ),
+    "pdf_split": (
+        "✂️ Split PDF",
+        "Send the PDF you want to split."
+    ),
+    "pdf_extract": (
+        "📑 Extract Pages",
+        "Send the PDF first.\n\nThen tell me the page numbers, e.g.:\n1,3,5"
+    ),
+    "pdf_xps": (
+        "📦 PDF → XPS",
+        "Send your PDF file."
+    ),
+    "pdf_protect": (
+        "🔐 Protect PDF",
+        "Send the PDF first.\nThen send the password."
+    ),
+    "pdf_unlock": (
+        "🔓 Unlock PDF",
+        "Send the protected PDF first.\nThen send its password."
+    ),
+}
+
+
+async def pdf_callback(query, context, data):
+    title, instruction = PDF_INSTRUCTIONS.get(
+        data,
+        ("PDF Tool", "Send your PDF file.")
+    )
+
+    context.user_data["mode"] = data
+
+    await query.message.edit_text(
+        f"""
+{title}
+
+━━━━━━━━━━━━━━━━━━
+
+{instruction}
+
+💳 Tool cost:
+<b>{tool_cost(title.replace("📕 ", "").replace("📝 ", "").replace("🖼️ ", "").replace("🗜️ ", "").replace("🔗 ", "").replace("✂️ ", "").replace("📑 ", "").replace("📦 ", "").replace("🔐 ", "").replace("🔓 ", ""))}</b> credit
+
+⭐ Premium users may have different limits.
+""",
+        parse_mode="HTML",
+        reply_markup=back_keyboard()
+    )
+
+
+# =========================================================
+# IMAGE CALLBACK
+# =========================================================
+
+async def image_callback(query, context, data):
+    instructions = {
+        "img_pdf": (
+            "📄 JPG/PNG → PDF",
+            "Send a JPG or PNG image."
+        ),
+        "img_compress": (
+            "🗜️ Compress Image",
+            "Send a JPG/PNG image."
+        ),
+        "img_convert": (
+            "🔄 Convert Image",
+            "Send an image."
+        ),
+        "img_resize": (
+            "📐 Resize Image",
+            "Send an image.\n\nThen send width and height like:\n1080 1080"
+        ),
+    }
+
+    title, instruction = instructions.get(
+        data,
+        ("Image Tool", "Send an image.")
+    )
+
+    context.user_data["mode"] = data
+
+    await query.message.edit_text(
+        f"""
+{title}
+
+━━━━━━━━━━━━━━━━━━
+
+{instruction}
+
+🚀 Send your file now.
+""",
+        parse_mode="HTML",
+        reply_markup=back_keyboard()
+    )
+
+
+# =========================================================
+# DOCUMENT HANDLER
+# =========================================================
+
+async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user)
+
+    mode = context.user_data.get("mode")
+
+    if not mode:
+        await update.message.reply_text(
+            "📂 Please choose a tool first.",
+            reply_markup=MAIN_KEYBOARD
+        )
+        return
+
+    document = update.message.document
+
+    if not document:
+        return
+
+    if document.file_size and document.file_size > 50 * 1024 * 1024:
+        await update.message.reply_text(
+            "⚠️ Maximum file size is 50 MB."
+        )
+        return
+
+    work = temp_dir()
+
+    try:
+        tg_file = await document.get_file()
+
+        input_path = work / safe_name(
+            document.file_name or "input.pdf"
+        )
+
+        await tg_file.download_to_drive(str(input_path))
+
+        if mode == "pdf_merge":
+            await handle_merge_file(update, context, input_path)
+            return
+
+        await process_pdf_file(
+            update,
+            context,
+            input_path,
+            mode,
+            work
+        )
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ <b>Processing failed.</b>\n\n<code>{str(e)[:500]}</code>",
+            parse_mode="HTML"
+        )
+
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# =========================================================
+# PDF PROCESSING
+# =========================================================
+
+async def process_pdf_file(update, context, input_path, mode, work):
+    user_id = update.effective_user.id
+
+    tool_names = {
+        "pdf_word": "PDF → Word",
+        "pdf_txt": "PDF → TXT",
+        "pdf_jpg": "PDF → JPG",
+        "pdf_png": "PDF → PNG",
+        "pdf_compress": "Compress PDF",
+        "pdf_split": "Split PDF",
+        "pdf_extract": "Extract Pages",
+        "pdf_xps": "PDF → XPS",
+        "pdf_protect": "Protect PDF",
+        "pdf_unlock": "Unlock PDF",
+    }
+
+    tool = tool_names.get(mode, "PDF Tool")
+    cost = tool_cost(tool)
+
+    if not check_cost(user_id, tool):
+        await update.message.reply_text(
+            f"""
+❌ <b>Not enough credits.</b>
+
+💳 Required: {cost}
+💰 Available: {get_user(user_id)["credits"]}
+
+🎁 Use Daily Bonus
+🎉 Refer friends
+🎟️ Redeem a code
+⭐ Get Premium
+""",
+            parse_mode="HTML"
+        )
+        shutil.rmtree(work, ignore_errors=True)
+        return
+
+    status = await update.message.reply_text(
+        "⚙️ <b>10%</b>\nStarting processing...",
+        parse_mode="HTML"
+    )
+
+    try:
+        if mode == "pdf_txt":
+            await progress(status, "⚙️ <b>30%</b>\nReading PDF...")
+
+            doc = fitz.open(str(input_path))
+            text = ""
+
+            for page in doc:
+                text += page.get_text() + "\n"
+
+            doc.close()
+
+            output = work / "converted.txt"
+            output.write_text(text, encoding="utf-8")
+
+            await progress(status, "⚙️ <b>90%</b>\nFinalizing...")
+
+            if not spend_credit(user_id, cost) and not is_premium(user_id):
+                raise Exception("Credit deduction failed")
+
+            log_usage(user_id, tool)
+
+            await status.delete()
+
+            with open(output, "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename="converted.txt",
+                    caption="✅ PDF → TXT complete!"
+                )
+
+        elif mode in ("pdf_jpg", "pdf_png"):
+            await progress(status, "⚙️ <b>20%</b>\nOpening PDF...")
+
+            doc = fitz.open(str(input_path))
+            total = len(doc)
+
+            for i, page in enumerate(doc):
+                percent = 20 + int(((i + 1) / total) * 70)
+
+                await progress(
+                    status,
+                    f"⚙️ <b>{percent}%</b>\nConverting page {i+1}/{total}..."
+                )
+
+                pix = page.get_pixmap(matrix=fitz.Matrix(1.7, 1.7))
+
+                ext = "jpg" if mode == "pdf_jpg" else "png"
+                output = work / f"page_{i+1}.{ext}"
+
+                if ext == "jpg":
+                    pix.save(str(output), output="jpeg")
+                else:
+                    pix.save(str(output), output="png")
+
+            doc.close()
+
+            if not spend_credit(user_id, cost) and not is_premium(user_id):
+                raise Exception("Credit deduction failed")
+
+            log_usage(user_id, tool)
+
+            await status.delete()
+
+            files = sorted(work.glob(f"page_*.{ext}"))
+
+            for file in files:
+                with open(file, "rb") as f:
+                    await update.message.reply_document(
+                        document=f,
+                        filename=file.name
+                    )
+
+            await update.message.reply_text(
+                "✅ <b>Conversion complete!</b>",
+                parse_mode="HTML"
+            )
+
+        elif mode == "pdf_word":
+            await progress(status, "⚙️ <b>30%</b>\nExtracting text...")
+
+            doc = fitz.open(str(input_path))
+            word = DocxDocument()
+
+            for i, page in enumerate(doc):
+                text = page.get_text()
+
+                if text.strip():
+                    word.add_heading(
+                        f"Page {i+1}",
+                        level=2
+                    )
+                    word.add_paragraph(text)
+
+            doc.close()
+
+            output = work / "converted.docx"
+            word.save(str(output))
+
+            await progress(status, "⚙️ <b>90%</b>\nCreating Word file...")
+
+            if not spend_credit(user_id, cost) and not is_premium(user_id):
+                raise Exception("Credit deduction failed")
+
+            log_usage(user_id, tool)
+
+            await status.delete()
+
+            with open(output, "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename="converted.docx",
+                    caption="✅ PDF → Word complete!"
+                )
+
+        elif mode == "pdf_compress":
+            await progress(status, "⚙️ <b>30%</b>\nCompressing PDF...")
+
+            output = work / "compressed.pdf"
+
+            subprocess.run(
+                [
+                    "gs",
+                    "-sDEVICE=pdfwrite",
+                    "-dCompatibilityLevel=1.4",
+                    "-dPDFSETTINGS=/ebook",
+                    "-dNOPAUSE",
+                    "-dQUIET",
+                    "-dBATCH",
+                    f"-sOutputFile={output}",
+                    str(input_path),
+                ],
+                check=True
+            )
+
+            await progress(status, "⚙️ <b>90%</b>\nFinalizing...")
+
+            if not spend_credit(user_id, cost) and not is_premium(user_id):
+                raise Exception("Credit deduction failed")
+
+            log_usage(user_id, tool)
+
+            await status.delete()
+
+            with open(output, "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename="compressed.pdf",
+                    caption="✅ PDF compressed!"
+                )
+
+        elif mode == "pdf_xps":
+            await progress(status, "⚙️ <b>30%</b>\nConverting PDF → XPS...")
+
+            output = work / "converted.xps"
+
+            subprocess.run(
+                [
+                    "gs",
+                    "-sDEVICE=xpswrite",
+                    "-dNOPAUSE",
+                    "-dBATCH",
+                    "-dQUIET",
+                    f"-sOutputFile={output}",
+                    str(input_path),
+                ],
+                check=True
+            )
+
+            await progress(status, "⚙️ <b>90%</b>\nFinalizing XPS...")
+
+            if not spend_credit(user_id, cost) and not is_premium(user_id):
+                raise Exception("Credit deduction failed")
+
+            log_usage(user_id, tool)
+
+            await status.delete()
+
+            with open(output, "rb") as f:
+                await update.message.reply_document(
+                    document=f,
+                    filename="converted.xps",
+                    caption="✅ PDF → XPS complete!"
+                )
+
+        elif mode == "pdf_split":
+            await progress(status, "⚙️ <b>30%</b>\nSplitting PDF...")
+
+            doc = fitz.open(str(input_path))
+            total = len(doc)
+
+            for i in range(total):
+                output = work / f"split_page_{i+1}.pdf"
+
+                new_doc = fitz.open()
+                new_doc.insert_pdf(
+                    doc,
+                    from_page=i,
+                    to_page=i
+                )
+                new_doc.save(str(output))
+                new_doc.close()
+
+            doc.close()
+
+            if not spend_credit(user_id, cost) and not is_premium(user_id):
+                raise Exception("Credit deduction failed")
+
+            log_usage(user_id, tool)
+
+            await status.delete()
+
+            await update.message.reply_text(
+                f"✅ Split complete!\n\n📄 Pages created: {total}"
+            )
+
+            for file in sorted(work.glob("split_page_*.pdf")):
+                with open(file, "rb") as f:
+                    await update.message.reply_document(
+                        document=f,
+                        filename=file.name
+                    )
+
+        elif mode == "pdf_extract":
+            context.user_data["extract_pdf"] = str(input_path)
+            context.user_data["extract_work"] = str(work)
+
+            await progress(
+                status,
+                "📑 <b>PDF received.</b>\n\n"
+                "Now send page numbers.\n\n"
+                "Example: <code>1,3,5</code>"
+            )
+
+            return
+
+        elif mode == "pdf_protect":
+            context.user_data["protect_pdf"] = str(input_path)
+            context.user_data["protect_work"] = str(work)
+
+            await progress(
+                status,
+                "🔐 <b>PDF received.</b>\n\n"
+                "Now send the password you want to use."
+            )
+
+            return
+
+        elif mode == "pdf_unlock":
+            context.user_data["unlock_pdf"] = str(input_path)
+            context.user_data["unlock_work"] = str(work)
+
+            await progress(
+                status,
+                "🔓 <b>Protected PDF received.</b>\n\n"
+                "Now send the PDF password."
+            )
+
+            return
+
+        await progress(status, "✅ <b>100%</b>\nComplete!")
+
+    except Exception as e:
+        await status.edit_text(
+            f"❌ <b>Processing error</b>\n\n<code>{str(e)[:500]}</code>",
+            parse_mode="HTML"
+        )
+
+        shutil.rmtree(work, ignore_errors=True)
+
+
+# =========================================================
+# TEXT HANDLER FOR PASSWORD / PAGES / RESIZE
+# =========================================================
+
+async def text_handler(update, context):
+    text = update.message.text.strip()
+    user_id = update.effective_user.id
+
+    ensure_user(update.effective_user)
+
+    # Redeem
+    if context.user_data.get("awaiting_redeem"):
+        await process_redeem(update, context)
+        return
+
+    # Extract pages
+    if context.user_data.get("extract_pdf"):
+        await extract_pages(update, context, text)
+        return
+
+    # Protect
+    if context.user_data.get("protect_pdf"):
+        await protect_pdf(update, context, text)
+        return
+
+    # Unlock
+    if context.user_data.get("unlock_pdf"):
+        await unlock_pdf(update, context, text)
+        return
+
+    # Resize
+    if context.user_data.get("resize_image"):
+        await resize_image(update, context, text)
+        return
+
+    # Main keyboard
+    if text == "📄 PDF Tools":
+        await pdf_tools(update, context)
+
+    elif text == "🖼️ Image Tools":
+        await image_tools(update, context)
+
+    elif text == "⭐ Premium":
+        await premium(update, context)
+
+    elif text == "👤 My Account":
+        await account(update, context)
+
+    elif text == "🎁 Daily Bonus":
+        await daily_bonus(update, context)
+
+    elif text == "🎉 Refer & Earn":
+        await referral(update, context)
+
+    elif text == "🎟️ Redeem Code":
+        await redeem_start(update, context)
+
+    elif text == "📜 History":
+        await history(update, context)
+
+    elif text == "💬 Support":
+        await support(update, context)
+
+    else:
+        await update.message.reply_text(
+            "👇 Please choose an option from the menu.",
+            reply_markup=MAIN_KEYBOARD
+        )
+
+
+# =========================================================
+# EXTRACT PAGES
+# =========================================================
+
+async def extract_pages(update, context, text):
+    user_id = update.effective_user.id
+    pdf_path = context.user_data.get("extract_pdf")
+    work_path = Path(context.user_data.get("extract_work"))
+
+    if not pdf_path:
+        return
+
+    try:
+        pages = []
+
+        for item in text.split(","):
+            n = int(item.strip())
+            if n > 0:
+                pages.append(n - 1)
+
+        doc = fitz.open(pdf_path)
+
+        valid = [
+            p for p in pages
+            if 0 <= p < len(doc)
+        ]
+
+        if not valid:
+            raise Exception("Invalid page numbers")
+
+        output = work_path / "extracted_pages.pdf"
+
+        new_doc = fitz.open()
+
+        for p in valid:
+            new_doc.insert_pdf(
+                doc,
+                from_page=p,
+                to_page=p
+            )
+
+        new_doc.save(str(output))
+        new_doc.close()
+        doc.close()
+
+        cost = tool_cost("Extract Pages")
+
+        if not check_cost(user_id, "Extract Pages"):
+            await update.message.reply_text(
+                "❌ Not enough credits."
+            )
+            return
+
+        if not spend_credit(user_id, cost) and not is_premium(user_id):
+            raise Exception("Credit deduction failed")
+
+        log_usage(user_id, "Extract Pages")
+
+        with open(output, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename="extracted_pages.pdf",
+                caption="✅ Pages extracted!"
+            )
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Error: {str(e)}"
+        )
+
+    finally:
+        context.user_data.pop("extract_pdf", None)
+        context.user_data.pop("extract_work", None)
+
+
+# =========================================================
+# PROTECT PDF
+# =========================================================
+
+async def protect_pdf(update, context, password):
+    user_id = update.effective_user.id
+
+    pdf_path = context.user_data.get("protect_pdf")
+    work = Path(context.user_data.get("protect_work"))
+
+    try:
+        if not check_cost(user_id, "Protect PDF"):
+            await update.message.reply_text(
+                "❌ Not enough credits."
+            )
+            return
+
+        doc = fitz.open(pdf_path)
+        output = work / "protected.pdf"
+
+        doc.save(
+            str(output),
+            encryption=fitz.PDF_ENCRYPT_AES_256,
+            owner_pw=password,
+            user_pw=password
+        )
+
+        doc.close()
+
+        if not spend_credit(user_id, tool_cost("Protect PDF")) and not is_premium(user_id):
+            raise Exception("Credit deduction failed")
+
+        log_usage(user_id, "Protect PDF")
+
+        with open(output, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename="protected.pdf",
+                caption="🔐 PDF protected successfully!"
+            )
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Protect failed: {str(e)}"
+        )
+
+    finally:
+        context.user_data.pop("protect_pdf", None)
+        context.user_data.pop("protect_work", None)
+
+
+# =========================================================
+# UNLOCK PDF
+# =========================================================
+
+async def unlock_pdf(update, context, password):
+    user_id = update.effective_user.id
+
+    pdf_path = context.user_data.get("unlock_pdf")
+    work = Path(context.user_data.get("unlock_work"))
+
+    try:
+        if not check_cost(user_id, "Unlock PDF"):
+            await update.message.reply_text(
+                "❌ Not enough credits."
+            )
+            return
+
+        doc = fitz.open(pdf_path)
+
+        if doc.needs_pass:
+            if not doc.authenticate(password):
+                raise Exception("Wrong PDF password")
+
+        output = work / "unlocked.pdf"
+
+        new_doc = fitz.open()
+        new_doc.insert_pdf(doc)
+        new_doc.save(
+            str(output),
+            encryption=fitz.PDF_ENCRYPT_NONE
+        )
+
+        new_doc.close()
+        doc.close()
+
+        if not spend_credit(user_id, tool_cost("Unlock PDF")) and not is_premium(user_id):
+            raise Exception("Credit deduction failed")
+
+        log_usage(user_id, "Unlock PDF")
+
+        with open(output, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename="unlocked.pdf",
+                caption="🔓 PDF unlocked successfully!"
+            )
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Unlock failed: {str(e)}"
+        )
+
+    finally:
+        context.user_data.pop("unlock_pdf", None)
+        context.user_data.pop("unlock_work", None)
+
+
+# =========================================================
+# MERGE PDF
+# =========================================================
+
+async def handle_merge_file(update, context, input_path):
+    files = context.user_data.setdefault("merge_files", [])
+
+    files.append(str(input_path))
+
+    await update.message.reply_text(
+        f"""
+📎 <b>PDF added!</b>
+
+Files in queue: <b>{len(files)}</b>
+
+➕ Send another PDF
+
+or
+
+✅ Type /done when finished.
+""",
+        parse_mode="HTML"
+    )
+
+
+async def done_command(update, context):
+    files = context.user_data.get("merge_files", [])
+
+    if not files:
+        await update.message.reply_text(
+            "⚠️ No PDF files are waiting."
+        )
+        return
+
+    user_id = update.effective_user.id
+
+    if not check_cost(user_id, "Merge PDF"):
+        await update.message.reply_text(
+            "❌ Not enough credits."
+        )
+        return
+
+    work = Path(files[0]).parent
+
+    try:
+        output = work / "merged.pdf"
+
+        result = fitz.open()
+
+        for file in files:
+            doc = fitz.open(file)
+            result.insert_pdf(doc)
+            doc.close()
+
+        result.save(str(output))
+        result.close()
+
+        if not spend_credit(user_id, tool_cost("Merge PDF")) and not is_premium(user_id):
+            raise Exception("Credit deduction failed")
+
+        log_usage(user_id, "Merge PDF")
+
+        with open(output, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename="merged.pdf",
+                caption="🔗 PDF merge complete!"
+            )
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Merge failed: {str(e)}"
+        )
+
+    finally:
+        context.user_data.pop("merge_files", None)
+
+
+# =========================================================
+# IMAGE HANDLER
+# =========================================================
+
+async def image_handler(update, context):
+    user_id = update.effective_user.id
+    ensure_user(update.effective_user)
+
+    mode = context.user_data.get("mode")
+
+    if mode not in [
+        "img_pdf",
+        "img_compress",
+        "img_convert",
+        "img_resize"
+    ]:
+        return
+
+    photo = None
+
+    if update.message.photo:
+        photo = update.message.photo[-1]
+
+    elif update.message.document:
+        photo = update.message.document
+
+    if not photo:
+        return
+
+    work = temp_dir()
+
+    try:
+        tg_file = await photo.get_file()
+
+        if update.message.document:
+            name = safe_name(
+                update.message.document.file_name or "image.jpg"
+            )
+        else:
+            name = "image.jpg"
+
+        input_path = work / name
+
+        await tg_file.download_to_drive(str(input_path))
+
+        if mode == "img_resize":
+            context.user_data["resize_image"] = str(input_path)
+            context.user_data["resize_work"] = str(work)
+
+            await update.message.reply_text(
+                """
+📐 <b>Resize Image</b>
+
+Send width and height.
+
+Example:
+<code>1080 1080</code>
+""",
+                parse_mode="HTML"
+            )
+            return
+
+        await process_image(update, context, input_path, mode, work)
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Image processing failed: {str(e)}"
+        )
+
+
+# =========================================================
+# IMAGE PROCESSING
+# =========================================================
+
+async def process_image(update, context, input_path, mode, work):
+    user_id = update.effective_user.id
+
+    tool = {
+        "img_pdf": "Image → PDF",
+        "img_compress": "Compress Image",
+        "img_convert": "Convert Image",
+    }[mode]
+
+    cost = tool_cost(tool)
+
+    if not check_cost(user_id, tool):
+        await update.message.reply_text(
+            "❌ Not enough credits."
+        )
+        return
+
+    status = await update.message.reply_text(
+        "⚙️ <b>10%</b>\nProcessing image...",
+        parse_mode="HTML"
+    )
+
+    try:
+        image = Image.open(input_path)
+
+        await progress(
+            status,
+            "⚙️ <b>50%</b>\nProcessing image..."
+        )
+
+        if mode == "img_pdf":
+            if image.mode != "RGB":
+                image = image.convert("RGB")
+
+            output = work / "converted.pdf"
+
+            image.save(
+                output,
+                "PDF",
+                resolution=100
+            )
+
+        elif mode == "img_compress":
+            image = image.convert("RGB")
+            output = work / "compressed.jpg"
+
+            image.save(
+                output,
+                "JPEG",
+                quality=55,
+                optimize=True
+            )
+
+        else:
+            image = image.convert("RGB")
+            output = work / "converted.png"
+
+            image.save(
+                output,
+                "PNG",
+                optimize=True
+            )
+
+        await progress(
+            status,
+            "⚙️ <b>90%</b>\nFinalizing..."
+        )
+
+        if not spend_credit(user_id, cost) and not is_premium(user_id):
+            raise Exception("Credit deduction failed")
+
+        log_usage(user_id, tool)
+
+        await status.delete()
+
+        with open(output, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename=output.name,
+                caption="✅ Image processing complete!"
+            )
+
+    except Exception as e:
+        await status.edit_text(
+            f"❌ Error: {str(e)}"
+        )
+
+
+# =========================================================
+# RESIZE IMAGE
+# =========================================================
+
+async def resize_image(update, context, text):
+    try:
+        parts = text.split()
+
+        if len(parts) != 2:
+            raise Exception("Use: 1080 1080")
+
+        width = int(parts[0])
+        height = int(parts[1])
+
+        if width < 1 or height < 1 or width > 5000 or height > 5000:
+            raise Exception("Invalid dimensions")
+
+        user_id = update.effective_user.id
+
+        if not check_cost(user_id, "Resize Image"):
+            await update.message.reply_text(
+                "❌ Not enough credits."
+            )
+            return
+
+        path = context.user_data["resize_image"]
+        work = Path(context.user_data["resize_work"])
+
+        image = Image.open(path)
+        image = image.resize((width, height))
+
+        output = work / "resized.jpg"
+        image.convert("RGB").save(
+            output,
+            "JPEG",
+            quality=90
+        )
+
+        if not spend_credit(user_id, tool_cost("Resize Image")) and not is_premium(user_id):
+            raise Exception("Credit deduction failed")
+
+        log_usage(user_id, "Resize Image")
+
+        with open(output, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename="resized.jpg",
+                caption="📐 Image resized successfully!"
+            )
+
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Resize failed: {str(e)}"
+        )
+
+    finally:
+        context.user_data.pop("resize_image", None)
+        context.user_data.pop("resize_work", None)
+
+
+# =========================================================
+# ADMIN
+# =========================================================
+
+def admin_only(user_id):
+    return user_id == ADMIN_ID
+
+
+async def admin_command(update, context):
+    if not admin_only(update.effective_user.id):
+        return
+
+    await update.message.reply_text(
+        """
+👑 <b>ADMIN PANEL</b>
+
+Commands:
+
+/createcode CODE CREDITS USES
+
+Example:
+/createcode RAFIM20 20 100
+
+/codes
+/disablecode CODE
+
+/addcredits USER_ID AMOUNT
+/addpremium USER_ID DAYS
+/stats
+""",
+        parse_mode="HTML"
+    )
+
+
+async def create_code(update, context):
+    if not admin_only(update.effective_user.id):
+        return
+
+    if len(context.args) != 3:
+        await update.message.reply_text(
+            "Usage:\n/createcode CODE CREDITS MAX_USES"
         )
         return
 
@@ -653,19 +1925,15 @@ Example:
 
     try:
         credits = int(context.args[1])
-        uses = int(context.args[2]) if len(context.args) >= 3 else 1
-
-        if credits <= 0 or uses <= 0:
-            raise ValueError
-
-    except ValueError:
-        await update.message.reply_text("❌ Credits and uses must be positive numbers.")
+        uses = int(context.args[2])
+    except:
+        await update.message.reply_text("❌ Invalid numbers.")
         return
 
-    con = db()
+    conn = db()
 
     try:
-        con.execute("""
+        conn.execute("""
             INSERT INTO redeem_codes
             (code, credits, max_uses, created_at)
             VALUES (?, ?, ?, ?)
@@ -675,663 +1943,200 @@ Example:
             uses,
             datetime.utcnow().isoformat()
         ))
-        con.commit()
+
+        conn.commit()
+
+        await update.message.reply_text(
+            f"""
+✅ <b>Redeem code created!</b>
+
+🎟️ Code: <code>{code}</code>
+💳 Credits: {credits}
+👥 Max uses: {uses}
+""",
+            parse_mode="HTML"
+        )
 
     except sqlite3.IntegrityError:
-        con.close()
-        await update.message.reply_text("⚠️ That code already exists.")
+        await update.message.reply_text(
+            "⚠️ That code already exists."
+        )
+
+    finally:
+        conn.close()
+
+
+async def codes_command(update, context):
+    if not admin_only(update.effective_user.id):
         return
 
-    con.close()
+    conn = db()
+
+    rows = conn.execute("""
+        SELECT *
+        FROM redeem_codes
+        ORDER BY created_at DESC
+    """).fetchall()
+
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text(
+            "No redeem codes."
+        )
+        return
+
+    text = "🎟️ <b>REDEEM CODES</b>\n\n"
+
+    for r in rows:
+        status = "ON" if r["active"] else "OFF"
+
+        text += (
+            f"<code>{r['code']}</code> | "
+            f"+{r['credits']} | "
+            f"{r['used_count']}/{r['max_uses']} | "
+            f"{status}\n"
+        )
 
     await update.message.reply_text(
-        f"""
-🎉🎟️ <b>REDEEM CODE CREATED!</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-🔐 Code:
-<code>{code}</code>
-
-💰 Reward: <b>{credits} Credits</b>
-👥 Max Uses: <b>{uses}</b>
-🟢 Status: <b>ACTIVE</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-📢 Give this code to your users.
-""",
+        text,
         parse_mode="HTML"
     )
 
 
-async def redeem_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+async def disable_code(update, context):
+    if not admin_only(update.effective_user.id):
         return
 
-    con = db()
-    rows = con.execute("""
-        SELECT * FROM redeem_codes
-        ORDER BY created_at DESC
-        LIMIT 30
-    """).fetchall()
-    con.close()
-
-    if not rows:
-        await update.message.reply_text("🎟️ No redeem codes yet.")
-        return
-
-    text = "🎟️ <b>REDEEM CODE MANAGER</b>\n\n"
-
-    for r in rows:
-        status = "🟢" if r["active"] else "🔴"
-        text += (
-            f"{status} <code>{r['code']}</code>\n"
-            f"💰 {r['credits']} credits | "
-            f"👥 {r['used_count']}/{r['max_uses']}\n\n"
-        )
-
-    await update.message.reply_text(text, parse_mode="HTML")
-
-
-async def disable_redeem(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not context.args:
+    if len(context.args) != 1:
         await update.message.reply_text(
-            "Use: /disablecode RAFIM20"
+            "/disablecode CODE"
         )
         return
 
     code = context.args[0].upper()
 
-    con = db()
-    cur = con.cursor()
+    conn = db()
 
-    cur.execute("""
+    conn.execute("""
         UPDATE redeem_codes
         SET active=0
         WHERE code=?
     """, (code,))
 
-    changed = cur.rowcount
-    con.commit()
-    con.close()
-
-    if changed:
-        await update.message.reply_text(
-            f"🔴 Redeem code <code>{code}</code> disabled.",
-            parse_mode="HTML"
-        )
-    else:
-        await update.message.reply_text("❌ Code not found.")
-
-
-# =========================================================
-# SUPPORT / PREMIUM / HISTORY
-# =========================================================
-
-async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "💬 Contact @rafimhossen",
-                url=f"https://t.me/{SUPPORT_USERNAME}"
-            )
-        ]
-    ])
+    conn.commit()
+    conn.close()
 
     await update.message.reply_text(
-        """
-🆘💙 <b>NEED HELP?</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-💬 Having a problem?
-❓ Need help with a tool?
-🐛 Found an error?
-
-👨‍💻 Contact our support directly.
-
-👇 Tap below to contact Support.
-""",
-        parse_mode="HTML",
-        reply_markup=keyboard
-    )
-
-
-async def premium(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        """
-💎🚀 <b>PREMIUM ZONE</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-⚡ More Credits
-📦 Higher file limits
-🚀 Premium tools
-🔥 Priority features
-
-━━━━━━━━━━━━━━━━━━━━
-
-💳 <b>Payment system is ready to connect.</b>
-
-No payment secret is stored inside this code.
-
-📌 Premium activation can currently be handled by Admin.
-""",
+        f"🚫 Code <code>{code}</code> disabled.",
         parse_mode="HTML"
     )
 
 
-async def history(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    con = db()
+async def add_credits_command(update, context):
+    if not admin_only(update.effective_user.id):
+        return
 
-    rows = con.execute("""
-        SELECT tool, cost, created_at
-        FROM usage
-        WHERE user_id=?
-        ORDER BY id DESC
-        LIMIT 10
-    """, (update.effective_user.id,)).fetchall()
-
-    con.close()
-
-    if not rows:
+    if len(context.args) != 2:
         await update.message.reply_text(
-            "📊✨ <b>No usage history yet.</b>\n\n🚀 Use a tool to see your activity here.",
-            parse_mode="HTML"
+            "/addcredits USER_ID AMOUNT"
         )
         return
-
-    text = "📊✨ <b>RECENT ACTIVITY</b>\n\n"
-
-    for r in rows:
-        text += (
-            f"🛠️ {r['tool']}\n"
-            f"💰 Cost: {r['cost']} credits\n"
-            f"🕐 {r['created_at'][:19]}\n\n"
-        )
-
-    await update.message.reply_text(text, parse_mode="HTML")
-
-
-# =========================================================
-# FILE PROCESSING
-# =========================================================
-
-def pdf_to_txt(src, dst):
-    import fitz
-
-    doc = fitz.open(src)
-
-    with open(dst, "w", encoding="utf-8") as f:
-        for page in doc:
-            f.write(page.get_text())
-            f.write("\n\n")
-
-    doc.close()
-
-
-def pdf_to_jpg(src, outdir):
-    import fitz
-
-    doc = fitz.open(src)
-    outputs = []
-
-    for i, page in enumerate(doc):
-        pix = page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
-        out = outdir / f"page_{i+1}.jpg"
-        pix.save(out)
-        outputs.append(out)
-
-    doc.close()
-    return outputs
-
-
-def jpg_to_pdf(src, dst):
-    from PIL import Image
-
-    img = Image.open(src).convert("RGB")
-    img.save(dst, "PDF")
-
-
-def compress_image(src, dst):
-    from PIL import Image
-
-    img = Image.open(src).convert("RGB")
-    img.save(dst, "JPEG", quality=55, optimize=True)
-
-
-def compress_pdf(src, dst):
-    result = subprocess.run(
-        [
-            "gs",
-            "-sDEVICE=pdfwrite",
-            "-dCompatibilityLevel=1.5",
-            "-dPDFSETTINGS=/ebook",
-            "-dNOPAUSE",
-            "-dQUIET",
-            "-dBATCH",
-            f"-sOutputFile={dst}",
-            str(src),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or "Ghostscript compression failed.")
-
-
-def pdf_to_xps(src, dst):
-    result = subprocess.run(
-        [
-            "gs",
-            "-sDEVICE=xpswrite",
-            "-dNOPAUSE",
-            "-dBATCH",
-            "-dSAFER",
-            f"-sOutputFile={dst}",
-            str(src),
-        ],
-        capture_output=True,
-        text=True,
-        timeout=180,
-    )
-
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or "PDF to XPS failed.")
-
-
-# =========================================================
-# CALLBACKS
-# =========================================================
-
-TOOL_NAMES = {
-    "pdf_txt": ("📝 PDF → TXT", 1),
-    "pdf_jpg": ("🖼️ PDF → JPG", 2),
-    "pdf_word": ("🔄 PDF → Word", 3),
-    "compress": ("📦 Compress PDF", 2),
-    "merge": ("🔗 Merge PDF", 2),
-    "split": ("✂️ Split PDF", 2),
-    "extract": ("📑 Extract Pages", 2),
-    "pdf_xps": ("🔄 PDF → XPS", 3),
-    "jpg_pdf": ("📸 JPG → PDF", 2),
-    "png_pdf": ("🖼️ PNG → PDF", 2),
-    "compress_image": ("📦 Compress Image", 1),
-}
-
-
-async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    data = query.data
-
-    if data == "back_main":
-        await query.message.reply_text(
-            "🏠✨ <b>MAIN MENU</b>\n\n👇 Choose your next action:",
-            parse_mode="HTML",
-            reply_markup=MAIN_KEYBOARD
-        )
-        return
-
-    if data in TOOL_NAMES:
-        name, cost = TOOL_NAMES[data]
-
-        context.user_data["selected_tool"] = data
-
-        await query.message.reply_text(
-            f"""
-{name} 🚀
-
-━━━━━━━━━━━━━━━━━━━━
-
-💰 Cost: <b>{cost} Credits</b>
-
-📎 Send your file now.
-
-⚡ I'll process it and return the result.
-
-⬅️ To cancel, use the Main Menu.
-""",
-            parse_mode="HTML"
-        )
-
-
-# =========================================================
-# DOCUMENT HANDLER
-# =========================================================
-
-async def document_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    tool = context.user_data.get("selected_tool")
-
-    if not tool:
-        await update.message.reply_text(
-            "📎✨ First choose a tool from 📄 PDF Tools or 🖼️ Image Tools."
-        )
-        return
-
-    name, cost = TOOL_NAMES.get(tool, ("Tool", 1))
-
-    u = get_user(uid)
-
-    available = u["credits"] + u["premium_credits"]
-
-    if available < cost:
-        await update.message.reply_text(
-            f"""
-⚠️💰 <b>NOT ENOUGH CREDITS</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-🛠️ Tool: {name}
-💳 Required: <b>{cost}</b>
-💰 Available: <b>{available}</b>
-
-🎁 Claim Daily Bonus
-👥 Refer & Earn
-🎟️ Redeem a Code
-💎 Get Premium
-""",
-            parse_mode="HTML"
-        )
-        return
-
-    doc = update.message.document
-
-    filename = doc.file_name or "document"
-    suffix = Path(filename).suffix.lower()
-
-    if tool.startswith("pdf_") or tool in {
-        "compress", "merge", "split", "extract"
-    }:
-        if suffix != ".pdf":
-            await update.message.reply_text(
-                "❌📄 Please send a PDF file for this tool."
-            )
-            return
-
-    if tool in {"jpg_pdf", "png_pdf", "compress_image"}:
-        if suffix not in {".jpg", ".jpeg", ".png"}:
-            await update.message.reply_text(
-                "❌🖼️ Please send a JPG or PNG image."
-            )
-            return
-
-    work = Path(tempfile.mkdtemp(dir=TMP_DIR))
 
     try:
-        await update.message.chat.send_action(ChatAction.UPLOAD_DOCUMENT)
-
-        source = work / filename
-        tg_file = await doc.get_file()
-
-        await tg_file.download_to_drive(source)
-
-        progress = await update.message.reply_text(
-            f"""
-⚡🔥 <b>PROCESSING STARTED</b>
-
-📄 <b>{filename}</b>
-
-🔄 <b>10%</b>
-▰░░░░░░░░░
-
-🧩 Reading your file...
-""",
-            parse_mode="HTML"
-        )
-
-        await progress.edit_text(
-            f"""
-⚙️ <b>PROCESSING YOUR FILE</b>
-
-📄 <b>{filename}</b>
-
-🔄 <b>30%</b>
-▰▰▰░░░░░░░
-
-🛠️ Preparing conversion...
-""",
-            parse_mode="HTML"
-        )
-
-        output_files = []
-
-        if tool == "pdf_txt":
-            out = work / f"{Path(filename).stem}.txt"
-            pdf_to_txt(source, out)
-            output_files = [out]
-
-        elif tool == "pdf_jpg":
-            output_files = pdf_to_jpg(source, work)
-
-        elif tool == "compress":
-            out = work / f"{Path(filename).stem}_compressed.pdf"
-            compress_pdf(source, out)
-            output_files = [out]
-
-        elif tool == "pdf_xps":
-            out = work / f"{Path(filename).stem}.xps"
-            pdf_to_xps(source, out)
-            output_files = [out]
-
-        elif tool in {"jpg_pdf", "png_pdf"}:
-            out = work / f"{Path(filename).stem}.pdf"
-            jpg_to_pdf(source, out)
-            output_files = [out]
-
-        elif tool == "compress_image":
-            out = work / f"{Path(filename).stem}_compressed.jpg"
-            compress_image(source, out)
-            output_files = [out]
-
-        else:
-            await progress.edit_text(
-                "🚧 This tool is included in the menu and database system, but its processing module is not enabled in this starter build."
-            )
-            return
-
-        await progress.edit_text(
-            """
-🚀 <b>FINALIZING...</b>
-
-🔄 <b>90%</b>
-▰▰▰▰▰▰▰▰▰░
-
-📦 Preparing your download...
-""",
-            parse_mode="HTML"
-        )
-
-        if not spend_credit(uid, cost):
-            await progress.edit_text(
-                "⚠️ Credits changed while processing. Please try again."
-            )
-            return
-
-        log_usage(uid, tool, cost)
-
-        await progress.edit_text(
-            f"""
-🎉✅ <b>MISSION COMPLETE!</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-📄 Your file is ready!
-
-🚀 Processing completed successfully.
-💰 Credits Used: <b>{cost}</b>
-
-👇 <b>Your download is below.</b>
-""",
-            parse_mode="HTML"
-        )
-
-        for output in output_files:
-            if output.exists():
-                with open(output, "rb") as f:
-                    await update.message.reply_document(
-                        document=f,
-                        caption=f"🎉✨ <b>{output.name}</b>\n💎 Powered by {BOT_NAME}",
-                        parse_mode="HTML"
-                    )
-
-    except Exception as e:
+        user_id = int(context.args[0])
+        amount = int(context.args[1])
+    except:
         await update.message.reply_text(
-            f"""
-❌⚠️ <b>PROCESSING FAILED</b>
-
-Something went wrong while processing the file.
-
-🛠️ Please try again with another file.
-
-🆘 If the problem continues, contact:
-@{SUPPORT_USERNAME}
-""",
-            parse_mode="HTML"
-        )
-
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
-        context.user_data.pop("selected_tool", None)
-
-
-# =========================================================
-# TEXT ROUTER
-# =========================================================
-
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    uid = update.effective_user.id
-
-    ensure_user(update.effective_user)
-
-    # Redeem input
-    if context.user_data.get("waiting_redeem"):
-        context.user_data["waiting_redeem"] = False
-
-        ok, msg = redeem_code(uid, text)
-
-        await update.message.reply_text(
-            msg,
-            parse_mode="HTML"
+            "❌ Invalid numbers."
         )
         return
 
-    if text == "📄 PDF Tools":
-        await show_pdf_tools(update.message)
+    add_credits(user_id, amount)
 
-    elif text == "🖼️ Image Tools":
-        await show_image_tools(update.message)
-
-    elif text == "💎 Premium":
-        await premium(update, context)
-
-    elif text == "👤 My Account":
-        await account(update, context)
-
-    elif text == "🎁 Daily Bonus":
-        await daily(update, context)
-
-    elif text == "👥 Refer & Earn":
-        await referral(update, context)
-
-    elif text == "🎟️ Redeem Code":
-        await redeem_prompt(update, context)
-
-    elif text == "📊 History":
-        await history(update, context)
-
-    elif text == "🆘 Support":
-        await support(update, context)
-
-    else:
-        await update.message.reply_text(
-            """
-🤖✨ <b>Rafim PDF Pro is ready!</b>
-
-📄 Choose a PDF tool
-🖼️ Choose an Image tool
-🎁 Claim your bonus
-🎟️ Redeem a code
-
-👇 Use the menu below.
-""",
-            parse_mode="HTML",
-            reply_markup=MAIN_KEYBOARD
-        )
+    await update.message.reply_text(
+        f"✅ Added {amount} credits to {user_id}."
+    )
 
 
-# =========================================================
-# ADMIN
-# =========================================================
-
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
+async def add_premium_command(update, context):
+    if not admin_only(update.effective_user.id):
         return
 
-    con = db()
+    if len(context.args) != 2:
+        await update.message.reply_text(
+            "/addpremium USER_ID DAYS"
+        )
+        return
 
-    users = con.execute(
-        "SELECT COUNT(*) AS c FROM users"
+    try:
+        user_id = int(context.args[0])
+        days = int(context.args[1])
+    except:
+        await update.message.reply_text(
+            "❌ Invalid numbers."
+        )
+        return
+
+    until = datetime.utcnow() + timedelta(days=days)
+
+    conn = db()
+
+    conn.execute("""
+        UPDATE users
+        SET premium_until=?
+        WHERE user_id=?
+    """, (
+        until.isoformat(),
+        user_id
+    ))
+
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(
+        f"⭐ Premium added for {days} days."
+    )
+
+
+async def stats_command(update, context):
+    if not admin_only(update.effective_user.id):
+        return
+
+    conn = db()
+
+    users = conn.execute(
+        "SELECT COUNT(*) c FROM users"
     ).fetchone()["c"]
 
-    usage = con.execute(
-        "SELECT COUNT(*) AS c FROM usage"
+    usage = conn.execute(
+        "SELECT COUNT(*) c FROM usage"
     ).fetchone()["c"]
 
-    con.close()
+    codes = conn.execute(
+        "SELECT COUNT(*) c FROM redeem_codes"
+    ).fetchone()["c"]
+
+    conn.close()
 
     await update.message.reply_text(
         f"""
-👨‍💼🔥 <b>ADMIN CONTROL CENTER</b>
-
-━━━━━━━━━━━━━━━━━━━━
+📊 <b>BOT STATISTICS</b>
 
 👥 Users: <b>{users}</b>
-📊 Tool Uses: <b>{usage}</b>
-
-🎟️ Redeem commands:
-
-➕ <code>/createcode RAFIM20 20 100</code>
-📋 <code>/codes</code>
-🔴 <code>/disablecode RAFIM20</code>
-
-━━━━━━━━━━━━━━━━━━━━
-
-💎 Admin ID:
-<code>{ADMIN_ID}</code>
+⚙️ Operations: <b>{usage}</b>
+🎟️ Redeem codes: <b>{codes}</b>
 """,
         parse_mode="HTML"
     )
 
 
 # =========================================================
-# HEALTH SERVER FOR RENDER
+# ERRORS
 # =========================================================
 
-app = Flask(__name__)
-
-
-@app.route("/")
-def home():
-    return "Rafim PDF Pro is running 🚀"
-
-
-@app.route("/health")
-def health():
-    return {"status": "ok"}
-
-
-def run_web():
-    port = int(os.getenv("PORT", "10000"))
-    app.run(host="0.0.0.0", port=port)
+async def error_handler(update, context):
+    print("ERROR:", context.error)
 
 
 # =========================================================
@@ -1339,9 +2144,17 @@ def run_web():
 # =========================================================
 
 def main():
+    if not BOT_TOKEN:
+        raise RuntimeError(
+            "BOT_TOKEN environment variable is missing."
+        )
+
     init_db()
 
-    Thread(target=run_web, daemon=True).start()
+    Thread(
+        target=run_web,
+        daemon=True
+    ).start()
 
     application = (
         Application.builder()
@@ -1349,14 +2162,57 @@ def main():
         .build()
     )
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("admin", admin))
+    # Commands
+    application.add_handler(
+        CommandHandler("start", start)
+    )
 
-    # Redeem admin commands
-    application.add_handler(CommandHandler("createcode", create_redeem))
-    application.add_handler(CommandHandler("codes", redeem_list))
-    application.add_handler(CommandHandler("disablecode", disable_redeem))
+    application.add_handler(
+        CommandHandler("done", done_command)
+    )
 
+    application.add_handler(
+        CommandHandler("admin", admin_command)
+    )
+
+    application.add_handler(
+        CommandHandler("createcode", create_code)
+    )
+
+    application.add_handler(
+        CommandHandler("codes", codes_command)
+    )
+
+    application.add_handler(
+        CommandHandler("disablecode", disable_code)
+    )
+
+    application.add_handler(
+        CommandHandler("addcredits", add_credits_command)
+    )
+
+    application.add_handler(
+        CommandHandler("addpremium", add_premium_command)
+    )
+
+    application.add_handler(
+        CommandHandler("stats", stats_command)
+    )
+
+    # Callback buttons
+    application.add_handler(
+        CallbackQueryHandler(callback_handler)
+    )
+
+    # Images
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO | filters.Document.IMAGE,
+            image_handler
+        )
+    )
+
+    # PDF/documents
     application.add_handler(
         MessageHandler(
             filters.Document.ALL,
@@ -1364,6 +2220,7 @@ def main():
         )
     )
 
+    # Text
     application.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -1371,17 +2228,12 @@ def main():
         )
     )
 
-    application.add_handler(
-        __import__(
-            "telegram.ext"
-        ).CallbackQueryHandler(callback_handler)
-    )
+    application.add_error_handler(error_handler)
 
-    print("🚀 Rafim PDF Pro started!")
+    print("Rafim PDF Pro started successfully.")
 
     application.run_polling(
-        drop_pending_updates=True,
-        allowed_updates=Update.ALL_TYPES
+        drop_pending_updates=True
     )
 
 
