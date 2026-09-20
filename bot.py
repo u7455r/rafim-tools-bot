@@ -79,7 +79,10 @@ def run_web():
 # =========================================================
 
 def db():
-    conn = sqlite3.connect(DB_FILE, check_same_thread=False)
+    conn = sqlite3.connect(
+        DB_FILE,
+        check_same_thread=False
+    )
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -216,11 +219,14 @@ def init_db():
 
 def get_user(user_id):
     conn = db()
+
     row = conn.execute(
         "SELECT * FROM users WHERE user_id=?",
         (user_id,)
     ).fetchone()
+
     conn.close()
+
     return row
 
 
@@ -233,12 +239,21 @@ def ensure_user(user):
     first_name = user.first_name or ""
 
     if not get_user(user_id):
+
         referral_code = f"RAFIM{user_id}"
 
         conn = db()
+
         conn.execute("""
             INSERT INTO users
-            (user_id, username, first_name, credits, joined_at, referral_code)
+            (
+                user_id,
+                username,
+                first_name,
+                credits,
+                joined_at,
+                referral_code
+            )
             VALUES (?, ?, ?, ?, ?, ?)
         """, (
             user_id,
@@ -251,7 +266,11 @@ def ensure_user(user):
 
         conn.execute("""
             INSERT OR IGNORE INTO user_settings
-            (user_id, language, notifications)
+            (
+                user_id,
+                language,
+                notifications
+            )
             VALUES (?, 'en', 1)
         """, (user_id,))
 
@@ -259,22 +278,35 @@ def ensure_user(user):
         conn.close()
 
     else:
+
         conn = db()
+
         conn.execute("""
             UPDATE users
-            SET username=?, first_name=?
+            SET username=?,
+                first_name=?
             WHERE user_id=?
-        """, (username, first_name, user_id))
+        """, (
+            username,
+            first_name,
+            user_id
+        ))
+
         conn.commit()
         conn.close()
 
 
 def is_banned(user_id):
+
     row = get_user(user_id)
-    return bool(row and row["banned"])
+
+    return bool(
+        row and row["banned"]
+    )
 
 
 def is_premium(user_id):
+
     row = get_user(user_id)
 
     if not row:
@@ -289,23 +321,39 @@ def is_premium(user_id):
         return True
 
     try:
-        return datetime.fromisoformat(until) > datetime.now()
+        return (
+            datetime.fromisoformat(until)
+            > datetime.now()
+        )
     except Exception:
         return False
 
 
-def add_credits(user_id, amount, reason="Admin"):
+def add_credits(
+    user_id,
+    amount,
+    reason="Admin"
+):
+
     conn = db()
 
     conn.execute("""
         UPDATE users
         SET credits=credits+?
         WHERE user_id=?
-    """, (amount, user_id))
+    """, (
+        amount,
+        user_id
+    ))
 
     conn.execute("""
         INSERT INTO credit_history
-        (user_id, amount, reason, created_at)
+        (
+            user_id,
+            amount,
+            reason,
+            created_at
+        )
         VALUES (?, ?, ?, ?)
     """, (
         user_id,
@@ -318,18 +366,31 @@ def add_credits(user_id, amount, reason="Admin"):
     conn.close()
 
 
-def remove_credits(user_id, amount, reason="Tool"):
+def remove_credits(
+    user_id,
+    amount,
+    reason="Tool"
+):
+
     conn = db()
 
     conn.execute("""
         UPDATE users
         SET credits=MAX(0, credits-?)
         WHERE user_id=?
-    """, (amount, user_id))
+    """, (
+        amount,
+        user_id
+    ))
 
     conn.execute("""
         INSERT INTO credit_history
-        (user_id, amount, reason, created_at)
+        (
+            user_id,
+            amount,
+            reason,
+            created_at
+        )
         VALUES (?, ?, ?, ?)
     """, (
         user_id,
@@ -343,33 +404,52 @@ def remove_credits(user_id, amount, reason="Tool"):
 
 
 def add_xp(user_id, amount=1):
+
     row = get_user(user_id)
 
     if not row:
         return
 
     xp = row["xp"] + amount
-    level = max(1, xp // 50 + 1)
+
+    level = max(
+        1,
+        xp // 50 + 1
+    )
 
     conn = db()
 
     conn.execute("""
         UPDATE users
-        SET xp=?, level=?
+        SET xp=?,
+            level=?
         WHERE user_id=?
-    """, (xp, level, user_id))
+    """, (
+        xp,
+        level,
+        user_id
+    ))
 
     conn.execute("""
         INSERT OR REPLACE INTO user_levels
-        (user_id, xp, level)
+        (
+            user_id,
+            xp,
+            level
+        )
         VALUES (?, ?, ?)
-    """, (user_id, xp, level))
+    """, (
+        user_id,
+        xp,
+        level
+    ))
 
     conn.commit()
     conn.close()
 
 
 def update_streak(user_id):
+
     row = get_user(user_id)
 
     if not row:
@@ -380,7 +460,10 @@ def update_streak(user_id):
     if row["last_streak"] == today:
         return row["streak"]
 
-    yesterday = (date.today() - timedelta(days=1)).isoformat()
+    yesterday = (
+        date.today()
+        - timedelta(days=1)
+    ).isoformat()
 
     if row["last_streak"] == yesterday:
         streak = row["streak"] + 1
@@ -391,24 +474,44 @@ def update_streak(user_id):
 
     conn.execute("""
         UPDATE users
-        SET streak=?, last_streak=?
+        SET streak=?,
+            last_streak=?
         WHERE user_id=?
-    """, (streak, today, user_id))
+    """, (
+        streak,
+        today,
+        user_id
+    ))
 
     conn.commit()
     conn.close()
 
-    add_xp(user_id, 5)
+    add_xp(
+        user_id,
+        5
+    )
 
     return streak
 
 
-def log_history(user_id, tool, status, cost=0):
+def log_history(
+    user_id,
+    tool,
+    status,
+    cost=0
+):
+
     conn = db()
 
     conn.execute("""
         INSERT INTO history
-        (user_id, tool, status, cost, created_at)
+        (
+            user_id,
+            tool,
+            status,
+            cost,
+            created_at
+        )
         VALUES (?, ?, ?, ?, ?)
     """, (
         user_id,
@@ -445,14 +548,17 @@ MAIN_MARKUP = ReplyKeyboardMarkup(
 # =========================================================
 
 TOOL_COST = {
+
     "PDF → Word": 2,
     "PDF → TXT": 1,
     "PDF → JPG": 2,
     "PDF → PNG": 2,
+
     "Compress PDF": 2,
     "Merge PDF": 3,
     "Split PDF": 3,
     "Extract Pages": 2,
+
     "PDF → XPS": 3,
     "Protect PDF": 2,
     "Unlock PDF": 2,
@@ -479,47 +585,74 @@ TOOL_COST = {
 # START
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     user = update.effective_user
+
     ensure_user(user)
 
     if is_banned(user.id):
+
         await update.message.reply_text(
             "🚫 Your account is currently blocked."
         )
+
         return
 
     args = context.args
 
-    # Referral
     if args:
+
         ref = args[0]
 
         if ref.startswith("RAFIM"):
+
             try:
-                ref_id = int(ref.replace("RAFIM", ""))
+
+                ref_id = int(
+                    ref.replace(
+                        "RAFIM",
+                        ""
+                    )
+                )
 
                 if ref_id != user.id:
+
                     row = get_user(user.id)
 
-                    if row and row["referred_by"] is None:
-                        ref_user = get_user(ref_id)
+                    if (
+                        row
+                        and row["referred_by"] is None
+                    ):
+
+                        ref_user = get_user(
+                            ref_id
+                        )
 
                         if ref_user:
+
                             conn = db()
 
                             conn.execute("""
                                 UPDATE users
                                 SET referred_by=?
                                 WHERE user_id=?
-                            """, (ref_id, user.id))
+                            """, (
+                                ref_id,
+                                user.id
+                            ))
 
                             conn.execute("""
                                 UPDATE users
-                                SET referral_count=referral_count+1
+                                SET referral_count=
+                                    referral_count+1
                                 WHERE user_id=?
-                            """, (ref_id,))
+                            """, (
+                                ref_id,
+                            ))
 
                             conn.commit()
                             conn.close()
@@ -548,17 +681,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def menu(update, context):
-    await start(update, context)
+async def menu(
+    update,
+    context
+):
+
+    await start(
+        update,
+        context
+    )
 
 
 # =========================================================
 # PDF MENU
 # =========================================================
 
-async def pdf_menu(update, context):
+async def pdf_menu(
+    update,
+    context
+):
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "📄 PDF → Word",
@@ -569,6 +713,7 @@ async def pdf_menu(update, context):
                 callback_data="pdf_txt"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "🖼️ PDF → JPG",
@@ -579,6 +724,7 @@ async def pdf_menu(update, context):
                 callback_data="pdf_png"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "🗜️ Compress PDF",
@@ -589,6 +735,7 @@ async def pdf_menu(update, context):
                 callback_data="pdf_merge"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "✂️ Split PDF",
@@ -599,6 +746,7 @@ async def pdf_menu(update, context):
                 callback_data="pdf_extract"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "📦 PDF → XPS",
@@ -609,6 +757,7 @@ async def pdf_menu(update, context):
                 callback_data="pdf_protect"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "🔓 Unlock PDF",
@@ -619,6 +768,7 @@ async def pdf_menu(update, context):
                 callback_data="pdf_from_images"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "🔄 Rotate PDF",
@@ -629,6 +779,7 @@ async def pdf_menu(update, context):
                 callback_data="pdf_pagesize"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "🔢 Page Numbers",
@@ -639,6 +790,7 @@ async def pdf_menu(update, context):
                 callback_data="pdf_watermark"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "🧹 Remove Metadata",
@@ -649,6 +801,7 @@ async def pdf_menu(update, context):
                 callback_data="pdf_info"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "⬅️ Back",
@@ -658,9 +811,12 @@ async def pdf_menu(update, context):
     ]
 
     await update.message.reply_text(
-        "📕 *PDF Tools*\n\nChoose a tool:",
+        "📕 *PDF Tools*\n\n"
+        "Choose a tool:",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
     )
 
 
@@ -668,9 +824,13 @@ async def pdf_menu(update, context):
 # IMAGE MENU
 # =========================================================
 
-async def image_menu(update, context):
+async def image_menu(
+    update,
+    context
+):
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "🗜️ Compress Image",
@@ -681,6 +841,7 @@ async def image_menu(update, context):
                 callback_data="img_png"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "📐 Resize",
@@ -691,6 +852,7 @@ async def image_menu(update, context):
                 callback_data="img_convert"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "📏 Custom Resize",
@@ -701,12 +863,14 @@ async def image_menu(update, context):
                 callback_data="img_webp"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "📚 Multiple → PDF",
                 callback_data="img_multi_pdf"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "⬅️ Back",
@@ -716,9 +880,12 @@ async def image_menu(update, context):
     ]
 
     await update.message.reply_text(
-        "🖼️ *Image Tools*\n\nChoose a tool:",
+        "🖼️ *Image Tools*\n\n"
+        "Choose a tool:",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
     )
 
 
@@ -726,21 +893,27 @@ async def image_menu(update, context):
 # PREMIUM
 # =========================================================
 
-async def premium_menu(update, context):
+async def premium_menu(
+    update,
+    context
+):
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "⭐ Weekly — ৳50",
                 callback_data="premium_weekly"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "💎 Monthly — ৳150",
                 callback_data="premium_monthly"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "⬅️ Back",
@@ -760,26 +933,43 @@ async def premium_menu(update, context):
         "• Premium badge\n\n"
         "Choose a plan:",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
     )
 
 
-async def premium_command(update, context):
-    await premium_menu(update, context)
+async def premium_command(
+    update,
+    context
+):
+
+    await premium_menu(
+        update,
+        context
+    )
 
 
 # =========================================================
 # ACCOUNT
 # =========================================================
 
-async def account(update, context):
+async def account(
+    update,
+    context
+):
 
     user = update.effective_user
+
     ensure_user(user)
 
     row = get_user(user.id)
 
-    premium_text = "💎 Premium" if is_premium(user.id) else "🆓 Free"
+    premium_text = (
+        "💎 Premium"
+        if is_premium(user.id)
+        else "🆓 Free"
+    )
 
     await update.message.reply_text(
         "👤 *My Account*\n\n"
@@ -794,30 +984,46 @@ async def account(update, context):
     )
 
 
-async def account_command(update, context):
-    await account(update, context)
+async def account_command(
+    update,
+    context
+):
+
+    await account(
+        update,
+        context
+    )
 
 
 # =========================================================
 # DAILY BONUS
 # =========================================================
 
-async def daily_bonus(update, context):
+async def daily_bonus(
+    update,
+    context
+):
 
     user = update.effective_user
+
     ensure_user(user)
 
     row = get_user(user.id)
+
     today = date.today().isoformat()
 
     if row["last_bonus"] == today:
+
         await update.message.reply_text(
             "🎁 Today's bonus has already been claimed.\n"
             "Come back tomorrow!"
         )
+
         return
 
-    streak = update_streak(user.id)
+    streak = update_streak(
+        user.id
+    )
 
     bonus = DAILY_BONUS
 
@@ -831,11 +1037,16 @@ async def daily_bonus(update, context):
     )
 
     conn = db()
+
     conn.execute("""
         UPDATE users
         SET last_bonus=?
         WHERE user_id=?
-    """, (today, user.id))
+    """, (
+        today,
+        user.id
+    ))
+
     conn.commit()
     conn.close()
 
@@ -847,22 +1058,37 @@ async def daily_bonus(update, context):
     )
 
 
-async def bonus_command(update, context):
-    await daily_bonus(update, context)
+async def bonus_command(
+    update,
+    context
+):
+
+    await daily_bonus(
+        update,
+        context
+    )
 
 
 # =========================================================
 # REFERRAL
 # =========================================================
 
-async def refer(update, context):
+async def refer(
+    update,
+    context
+):
 
     user = update.effective_user
+
     ensure_user(user)
 
     me = await context.bot.get_me()
 
-    link = f"https://t.me/{me.username}?start=RAFIM{user.id}"
+    link = (
+        f"https://t.me/"
+        f"{me.username}"
+        f"?start=RAFIM{user.id}"
+    )
 
     row = get_user(user.id)
 
@@ -870,18 +1096,24 @@ async def refer(update, context):
         "👥 *Refer & Earn*\n\n"
         f"🔗 Your invite link:\n{link}\n\n"
         "🎁 Referral reward: 2 credits\n"
-        f"👥 Total referrals: {row['referral_count']}\n\n"
+        f"👥 Total referrals: "
+        f"{row['referral_count']}\n\n"
         "Share your link with friends.",
         parse_mode="Markdown"
     )
 
 
-async def referral_leaderboard(update, context):
+async def referral_leaderboard(
+    update,
+    context
+):
 
     conn = db()
 
     rows = conn.execute("""
-        SELECT first_name, username, referral_count
+        SELECT first_name,
+               username,
+               referral_count
         FROM users
         ORDER BY referral_count DESC
         LIMIT 10
@@ -889,11 +1121,25 @@ async def referral_leaderboard(update, context):
 
     conn.close()
 
-    text = "🏆 *Referral Leaderboard*\n\n"
+    text = (
+        "🏆 *Referral Leaderboard*\n\n"
+    )
 
-    for i, row in enumerate(rows, 1):
-        name = row["first_name"] or row["username"] or "User"
-        text += f"{i}. {name} — {row['referral_count']} referrals\n"
+    for i, row in enumerate(
+        rows,
+        1
+    ):
+
+        name = (
+            row["first_name"]
+            or row["username"]
+            or "User"
+        )
+
+        text += (
+            f"{i}. {name} — "
+            f"{row['referral_count']} referrals\n"
+        )
 
     await update.message.reply_text(
         text,
@@ -901,25 +1147,38 @@ async def referral_leaderboard(update, context):
     )
 
 
-async def refer_command(update, context):
-    await refer(update, context)
+async def refer_command(
+    update,
+    context
+):
+
+    await refer(
+        update,
+        context
+    )
 
 
 # =========================================================
 # REDEEM
 # =========================================================
 
-async def redeem(update, context):
+async def redeem(
+    update,
+    context
+):
 
     if not context.args:
+
         await update.message.reply_text(
             "🎟️ Use:\n/redeem CODE"
         )
+
         return
 
     code = context.args[0].upper()
 
     user = update.effective_user
+
     ensure_user(user)
 
     conn = db()
@@ -928,45 +1187,69 @@ async def redeem(update, context):
         SELECT *
         FROM redeem_codes
         WHERE code=?
-    """, (code,)).fetchone()
+    """, (
+        code,
+    )).fetchone()
 
     if not code_row:
+
         conn.close()
+
         await update.message.reply_text(
             "❌ Invalid redeem code."
         )
+
         return
 
     if not code_row["active"]:
+
         conn.close()
+
         await update.message.reply_text(
             "❌ This code is disabled."
         )
+
         return
 
-    if code_row["used_count"] >= code_row["max_uses"]:
+    if (
+        code_row["used_count"]
+        >= code_row["max_uses"]
+    ):
+
         conn.close()
+
         await update.message.reply_text(
             "❌ This code has reached its usage limit."
         )
+
         return
 
     already = conn.execute("""
         SELECT id
         FROM redemptions
         WHERE user_id=? AND code=?
-    """, (user.id, code)).fetchone()
+    """, (
+        user.id,
+        code
+    )).fetchone()
 
     if already:
+
         conn.close()
+
         await update.message.reply_text(
             "⚠️ You have already used this code."
         )
+
         return
 
     conn.execute("""
         INSERT INTO redemptions
-        (user_id, code, redeemed_at)
+        (
+            user_id,
+            code,
+            redeemed_at
+        )
         VALUES (?, ?, ?)
     """, (
         user.id,
@@ -978,7 +1261,9 @@ async def redeem(update, context):
         UPDATE redeem_codes
         SET used_count=used_count+1
         WHERE code=?
-    """, (code,))
+    """, (
+        code,
+    ))
 
     conn.commit()
     conn.close()
@@ -995,7 +1280,10 @@ async def redeem(update, context):
     )
 
 
-async def redeem_button(update, context):
+async def redeem_button(
+    update,
+    context
+):
 
     await update.message.reply_text(
         "🎟️ Send your redeem code like this:\n\n"
@@ -1008,32 +1296,46 @@ async def redeem_button(update, context):
 # HISTORY
 # =========================================================
 
-async def history(update, context):
+async def history(
+    update,
+    context
+):
 
     user = update.effective_user
+
     ensure_user(user)
 
     conn = db()
 
     rows = conn.execute("""
-        SELECT tool, status, cost, created_at
+        SELECT tool,
+               status,
+               cost,
+               created_at
         FROM history
         WHERE user_id=?
         ORDER BY id DESC
         LIMIT 20
-    """, (user.id,)).fetchall()
+    """, (
+        user.id,
+    )).fetchall()
 
     conn.close()
 
     if not rows:
+
         await update.message.reply_text(
             "📜 No history yet."
         )
+
         return
 
-    text = "📜 *Recent History*\n\n"
+    text = (
+        "📜 *Recent History*\n\n"
+    )
 
     for row in rows:
+
         text += (
             f"• {row['tool']}\n"
             f"  Status: {row['status']}\n"
@@ -1047,29 +1349,47 @@ async def history(update, context):
     )
 
 
-async def credit_history_cmd(update, context):
+async def credit_history_cmd(
+    update,
+    context
+):
 
     user = update.effective_user
 
     conn = db()
 
     rows = conn.execute("""
-        SELECT amount, reason, created_at
+        SELECT amount,
+               reason,
+               created_at
         FROM credit_history
         WHERE user_id=?
         ORDER BY id DESC
         LIMIT 20
-    """, (user.id,)).fetchall()
+    """, (
+        user.id,
+    )).fetchall()
 
     conn.close()
 
-    text = "💳 *Credit History*\n\n"
+    text = (
+        "💳 *Credit History*\n\n"
+    )
 
     if not rows:
+
         text += "No credit history."
+
     else:
+
         for row in rows:
-            sign = "+" if row["amount"] > 0 else ""
+
+            sign = (
+                "+"
+                if row["amount"] > 0
+                else ""
+            )
+
             text += (
                 f"{sign}{row['amount']} — "
                 f"{row['reason']}\n"
@@ -1085,21 +1405,32 @@ async def credit_history_cmd(update, context):
 # SUPPORT
 # =========================================================
 
-async def support(update, context):
+async def support(
+    update,
+    context
+):
 
     await update.message.reply_text(
         "🆘 *Support*\n\n"
         f"👨‍💻 Direct support: @{SUPPORT_USERNAME}\n\n"
-        "Or send your problem here and it will be created as a support ticket.",
+        "Or send your problem here and it will be "
+        "created as a support ticket.",
         parse_mode="Markdown"
     )
 
-    context.user_data["support_waiting"] = True
+    context.user_data[
+        "support_waiting"
+    ] = True
 
 
-async def support_message(update, context):
+async def support_message(
+    update,
+    context
+):
 
-    if not context.user_data.get("support_waiting"):
+    if not context.user_data.get(
+        "support_waiting"
+    ):
         return False
 
     if not update.message:
@@ -1108,13 +1439,22 @@ async def support_message(update, context):
     if update.effective_user.id == ADMIN_ID:
         return False
 
-    msg = update.message.text or update.message.caption or "Media message"
+    msg = (
+        update.message.text
+        or update.message.caption
+        or "Media message"
+    )
 
     conn = db()
 
     cur = conn.execute("""
         INSERT INTO support_tickets
-        (user_id, message, status, created_at)
+        (
+            user_id,
+            message,
+            status,
+            created_at
+        )
         VALUES (?, ?, 'open', ?)
     """, (
         update.effective_user.id,
@@ -1127,7 +1467,9 @@ async def support_message(update, context):
     conn.commit()
     conn.close()
 
-    context.user_data["support_waiting"] = False
+    context.user_data[
+        "support_waiting"
+    ] = False
 
     await update.message.reply_text(
         f"🎫 Support ticket #{ticket_id} created.\n"
@@ -1135,14 +1477,17 @@ async def support_message(update, context):
     )
 
     try:
+
         await context.bot.send_message(
             ADMIN_ID,
             "🆘 *New Support Ticket*\n\n"
             f"🎫 Ticket: #{ticket_id}\n"
-            f"👤 User: {update.effective_user.id}\n"
+            f"👤 User: "
+            f"{update.effective_user.id}\n"
             f"💬 Message:\n{msg}",
             parse_mode="Markdown"
         )
+
     except Exception:
         pass
 
@@ -1153,9 +1498,13 @@ async def support_message(update, context):
 # SETTINGS
 # =========================================================
 
-async def settings(update, context):
+async def settings(
+    update,
+    context
+):
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "🇧🇩 বাংলা",
@@ -1166,12 +1515,14 @@ async def settings(update, context):
                 callback_data="lang_en"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "🔔 Notifications ON/OFF",
                 callback_data="toggle_notifications"
             )
         ],
+
         [
             InlineKeyboardButton(
                 "⬅️ Back",
@@ -1184,7 +1535,9 @@ async def settings(update, context):
         "⚙️ *Settings*\n\n"
         "Choose your settings:",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
     )
 
 
@@ -1192,7 +1545,10 @@ async def settings(update, context):
 # HELP / ABOUT / STATUS
 # =========================================================
 
-async def help_command(update, context):
+async def help_command(
+    update,
+    context
+):
 
     await update.message.reply_text(
         "📚 *Rafim PDF Pro Help*\n\n"
@@ -1212,7 +1568,10 @@ async def help_command(update, context):
     )
 
 
-async def about_command(update, context):
+async def about_command(
+    update,
+    context
+):
 
     await update.message.reply_text(
         "🤖 *Rafim PDF Pro*\n\n"
@@ -1227,7 +1586,10 @@ async def about_command(update, context):
     )
 
 
-async def status_command(update, context):
+async def status_command(
+    update,
+    context
+):
 
     await update.message.reply_text(
         "🟢 *Bot Status*\n\n"
@@ -1243,13 +1605,26 @@ async def status_command(update, context):
 # PREMIUM REQUEST
 # =========================================================
 
-async def premium_plan(update, context, plan, amount):
+async def premium_plan(
+    update,
+    context,
+    plan,
+    amount
+):
 
     user = update.effective_user
 
-    context.user_data["premium_plan"] = plan
-    context.user_data["premium_amount"] = amount
-    context.user_data["premium_waiting"] = True
+    context.user_data[
+        "premium_plan"
+    ] = plan
+
+    context.user_data[
+        "premium_amount"
+    ] = amount
+
+    context.user_data[
+        "premium_waiting"
+    ] = True
 
     await update.callback_query.answer()
 
@@ -1263,12 +1638,19 @@ async def premium_plan(update, context, plan, amount):
     )
 
 
-async def submit_premium_request(update, context):
+async def submit_premium_request(
+    update,
+    context
+):
 
-    if not context.user_data.get("premium_waiting"):
+    if not context.user_data.get(
+        "premium_waiting"
+    ):
         return False
 
-    txn = (update.message.text or "").strip()
+    txn = (
+        update.message.text or ""
+    ).strip()
 
     if not txn:
         return False
@@ -1285,13 +1667,25 @@ async def submit_premium_request(update, context):
         0
     )
 
-    request_id = uuid.uuid4().hex[:10].upper()
+    request_id = (
+        uuid.uuid4()
+        .hex[:10]
+        .upper()
+    )
 
     conn = db()
 
     cur = conn.execute("""
         INSERT INTO premium_requests
-        (user_id, username, plan, amount, txn_id, status, created_at)
+        (
+            user_id,
+            username,
+            plan,
+            amount,
+            txn_id,
+            status,
+            created_at
+        )
         VALUES (?, ?, ?, ?, ?, 'pending', ?)
     """, (
         user.id,
@@ -1307,7 +1701,9 @@ async def submit_premium_request(update, context):
     conn.commit()
     conn.close()
 
-    context.user_data["premium_waiting"] = False
+    context.user_data[
+        "premium_waiting"
+    ] = False
 
     await update.message.reply_text(
         "✅ Premium request submitted!\n\n"
@@ -1317,14 +1713,19 @@ async def submit_premium_request(update, context):
     )
 
     keyboard = [
+
         [
             InlineKeyboardButton(
                 "✅ Approve",
-                callback_data=f"approve_premium_{db_id}"
+                callback_data=(
+                    f"approve_premium_{db_id}"
+                )
             ),
             InlineKeyboardButton(
                 "❌ Reject",
-                callback_data=f"reject_premium_{db_id}"
+                callback_data=(
+                    f"reject_premium_{db_id}"
+                )
             )
         ]
     ]
@@ -1339,24 +1740,39 @@ async def submit_premium_request(update, context):
         f"💰 Amount: ৳{amount}\n"
         f"🧾 Transaction ID: `{txn}`",
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(
+            keyboard
+        )
     )
 
     return True
 
 
-async def activate_premium(user_id, plan):
+async def activate_premium(
+    user_id,
+    plan
+):
 
     if plan.lower() == "weekly":
-        until = datetime.now() + timedelta(days=7)
+
+        until = (
+            datetime.now()
+            + timedelta(days=7)
+        )
+
     else:
-        until = datetime.now() + timedelta(days=30)
+
+        until = (
+            datetime.now()
+            + timedelta(days=30)
+        )
 
     conn = db()
 
     conn.execute("""
         UPDATE users
-        SET premium=1, premium_until=?
+        SET premium=1,
+            premium_until=?
         WHERE user_id=?
     """, (
         until.isoformat(),
@@ -1368,7 +1784,11 @@ async def activate_premium(user_id, plan):
 
     add_credits(
         user_id,
-        20 if plan.lower() == "weekly" else 60,
+        (
+            20
+            if plan.lower() == "weekly"
+            else 60
+        ),
         "Premium Bonus"
     )
 
@@ -1378,10 +1798,17 @@ async def activate_premium(user_id, plan):
 # =========================================================
 
 def admin_only(update):
-    return update.effective_user.id == ADMIN_ID
+
+    return (
+        update.effective_user.id
+        == ADMIN_ID
+    )
 
 
-async def admin_dashboard(update, context):
+async def admin_dashboard(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
@@ -1405,7 +1832,8 @@ async def admin_dashboard(update, context):
     ).fetchone()["c"]
 
     requests = conn.execute(
-        "SELECT COUNT(*) c FROM premium_requests WHERE status='pending'"
+        "SELECT COUNT(*) c FROM premium_requests "
+        "WHERE status='pending'"
     ).fetchone()["c"]
 
     conn.close()
@@ -1433,34 +1861,54 @@ async def admin_dashboard(update, context):
     )
 
 
-async def createcode(update, context):
+async def createcode(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
 
     if len(context.args) < 3:
+
         await update.message.reply_text(
             "Use:\n/createcode CODE CREDITS USES"
         )
+
         return
 
     code = context.args[0].upper()
 
     try:
-        credits = int(context.args[1])
-        uses = int(context.args[2])
+
+        credits = int(
+            context.args[1]
+        )
+
+        uses = int(
+            context.args[2]
+        )
+
     except Exception:
+
         await update.message.reply_text(
             "Credits and uses must be numbers."
         )
+
         return
 
     conn = db()
 
     try:
+
         conn.execute("""
             INSERT INTO redeem_codes
-            (code, credits, max_uses, created_at)
+            (
+                code,
+                credits,
+                max_uses,
+                created_at
+            )
             VALUES (?, ?, ?, ?)
         """, (
             code,
@@ -1479,15 +1927,20 @@ async def createcode(update, context):
         )
 
     except sqlite3.IntegrityError:
+
         await update.message.reply_text(
             "❌ Code already exists."
         )
 
     finally:
+
         conn.close()
 
 
-async def codes(update, context):
+async def codes(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
@@ -1503,20 +1956,31 @@ async def codes(update, context):
     conn.close()
 
     if not rows:
+
         await update.message.reply_text(
             "No redeem codes."
         )
+
         return
 
-    text = "🎟️ *Redeem Codes*\n\n"
+    text = (
+        "🎟️ *Redeem Codes*\n\n"
+    )
 
     for row in rows:
-        status = "ON" if row["active"] else "OFF"
+
+        status = (
+            "ON"
+            if row["active"]
+            else "OFF"
+        )
 
         text += (
             f"`{row['code']}`\n"
             f"Credits: {row['credits']}\n"
-            f"Used: {row['used_count']}/{row['max_uses']}\n"
+            f"Used: "
+            f"{row['used_count']}/"
+            f"{row['max_uses']}\n"
             f"Status: {status}\n\n"
         )
 
@@ -1526,15 +1990,20 @@ async def codes(update, context):
     )
 
 
-async def disablecode(update, context):
+async def disablecode(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
 
     if not context.args:
+
         await update.message.reply_text(
             "Use:\n/disablecode CODE"
         )
+
         return
 
     code = context.args[0].upper()
@@ -1545,7 +2014,9 @@ async def disablecode(update, context):
         UPDATE redeem_codes
         SET active=0
         WHERE code=?
-    """, (code,))
+    """, (
+        code,
+    ))
 
     conn.commit()
     conn.close()
@@ -1555,24 +2026,38 @@ async def disablecode(update, context):
     )
 
 
-async def addcredits_admin(update, context):
+async def addcredits_admin(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
 
     if len(context.args) < 2:
+
         await update.message.reply_text(
             "/addcredits USER_ID AMOUNT"
         )
+
         return
 
     try:
-        uid = int(context.args[0])
-        amount = int(context.args[1])
+
+        uid = int(
+            context.args[0]
+        )
+
+        amount = int(
+            context.args[1]
+        )
+
     except Exception:
+
         await update.message.reply_text(
             "Invalid numbers."
         )
+
         return
 
     add_credits(
@@ -1586,33 +2071,51 @@ async def addcredits_admin(update, context):
     )
 
 
-async def addpremium_admin(update, context):
+async def addpremium_admin(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
 
     if len(context.args) < 2:
+
         await update.message.reply_text(
             "/addpremium USER_ID DAYS"
         )
+
         return
 
     try:
-        uid = int(context.args[0])
-        days = int(context.args[1])
+
+        uid = int(
+            context.args[0]
+        )
+
+        days = int(
+            context.args[1]
+        )
+
     except Exception:
+
         await update.message.reply_text(
             "Invalid numbers."
         )
+
         return
 
-    until = datetime.now() + timedelta(days=days)
+    until = (
+        datetime.now()
+        + timedelta(days=days)
+    )
 
     conn = db()
 
     conn.execute("""
         UPDATE users
-        SET premium=1, premium_until=?
+        SET premium=1,
+            premium_until=?
         WHERE user_id=?
     """, (
         until.isoformat(),
@@ -1628,7 +2131,10 @@ async def addpremium_admin(update, context):
     )
 
 
-async def stats(update, context):
+async def stats(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
@@ -1645,13 +2151,17 @@ async def stats(update, context):
         SELECT COUNT(*) c
         FROM users
         WHERE substr(joined_at,1,10)=?
-    """, (today,)).fetchone()["c"]
+    """, (
+        today,
+    )).fetchone()["c"]
 
     today_tools = conn.execute("""
         SELECT COUNT(*) c
         FROM history
         WHERE substr(created_at,1,10)=?
-    """, (today,)).fetchone()["c"]
+    """, (
+        today,
+    )).fetchone()["c"]
 
     sent = conn.execute("""
         SELECT COALESCE(SUM(sent),0) c
@@ -1676,18 +2186,25 @@ async def stats(update, context):
     )
 
 
-async def ban_user(update, context):
+async def ban_user(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
 
     if not context.args:
+
         await update.message.reply_text(
             "/ban USER_ID"
         )
+
         return
 
-    uid = int(context.args[0])
+    uid = int(
+        context.args[0]
+    )
 
     conn = db()
 
@@ -1704,18 +2221,25 @@ async def ban_user(update, context):
     )
 
 
-async def unban_user(update, context):
+async def unban_user(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
 
     if not context.args:
+
         await update.message.reply_text(
             "/unban USER_ID"
         )
+
         return
 
-    uid = int(context.args[0])
+    uid = int(
+        context.args[0]
+    )
 
     conn = db()
 
@@ -1736,7 +2260,10 @@ async def unban_user(update, context):
 # BROADCAST SYSTEM
 # =========================================================
 
-async def broadcast_start(update, context):
+async def broadcast_start(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
@@ -1753,13 +2280,20 @@ async def broadcast_start(update, context):
     conn.close()
 
     if running:
+
         await update.message.reply_text(
             "⚠️ A broadcast is already running."
         )
+
         return
 
-    context.bot_data["broadcast_waiting"] = True
-    context.bot_data["broadcast_target"] = "all"
+    context.bot_data[
+        "broadcast_waiting"
+    ] = True
+
+    context.bot_data[
+        "broadcast_target"
+    ] = "all"
 
     await update.message.reply_text(
         "📢 *Broadcast Mode*\n\n"
@@ -1770,13 +2304,21 @@ async def broadcast_start(update, context):
     )
 
 
-async def broadcast_premium(update, context):
+async def broadcast_premium(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
 
-    context.bot_data["broadcast_waiting"] = True
-    context.bot_data["broadcast_target"] = "premium"
+    context.bot_data[
+        "broadcast_waiting"
+    ] = True
+
+    context.bot_data[
+        "broadcast_target"
+    ] = "premium"
 
     await update.message.reply_text(
         "💎 Send the message for PREMIUM users.\n\n"
@@ -1784,13 +2326,21 @@ async def broadcast_premium(update, context):
     )
 
 
-async def broadcast_free(update, context):
+async def broadcast_free(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
 
-    context.bot_data["broadcast_waiting"] = True
-    context.bot_data["broadcast_target"] = "free"
+    context.bot_data[
+        "broadcast_waiting"
+    ] = True
+
+    context.bot_data[
+        "broadcast_target"
+    ] = "free"
 
     await update.message.reply_text(
         "🆓 Send the message for FREE users.\n\n"
@@ -1798,20 +2348,28 @@ async def broadcast_free(update, context):
     )
 
 
-async def cancel_broadcast(update, context):
+async def cancel_broadcast(
+    update,
+    context
+):
 
     if not admin_only(update):
         return
 
-    context.bot_data["broadcast_waiting"] = False
+    context.bot_data[
+        "broadcast_waiting"
+    ] = False
 
     conn = db()
 
     conn.execute("""
         UPDATE broadcast_jobs
-        SET status='cancelled', finished_at=?
+        SET status='cancelled',
+            finished_at=?
         WHERE status IN ('waiting','running')
-    """, (datetime.now().isoformat(),))
+    """, (
+        datetime.now().isoformat(),
+    ))
 
     conn.commit()
     conn.close()
@@ -1821,19 +2379,26 @@ async def cancel_broadcast(update, context):
     )
 
 
-async def broadcast_content_handler(update, context):
+async def broadcast_content_handler(
+    update,
+    context
+):
 
     if not admin_only(update):
         return False
 
-    if not context.bot_data.get("broadcast_waiting"):
+    if not context.bot_data.get(
+        "broadcast_waiting"
+    ):
         return False
 
     if not update.message:
         return False
 
-    # Don't treat commands as broadcast content.
-    if update.message.text and update.message.text.startswith("/"):
+    if (
+        update.message.text
+        and update.message.text.startswith("/")
+    ):
         return False
 
     target = context.bot_data.get(
@@ -1841,13 +2406,21 @@ async def broadcast_content_handler(update, context):
         "all"
     )
 
-    context.bot_data["broadcast_waiting"] = False
+    context.bot_data[
+        "broadcast_waiting"
+    ] = False
 
     conn = db()
 
     cur = conn.execute("""
         INSERT INTO broadcast_jobs
-        (admin_id, target, status, message_id, created_at)
+        (
+            admin_id,
+            target,
+            status,
+            message_id,
+            created_at
+        )
         VALUES (?, ?, 'running', ?, ?)
     """, (
         ADMIN_ID,
@@ -1861,24 +2434,28 @@ async def broadcast_content_handler(update, context):
     conn.commit()
     conn.close()
 
-    # Get targets
     conn = db()
 
     if target == "premium":
+
         rows = conn.execute("""
             SELECT user_id
             FROM users
-            WHERE premium=1 AND banned=0
+            WHERE premium=1
+              AND banned=0
         """).fetchall()
 
     elif target == "free":
+
         rows = conn.execute("""
             SELECT user_id
             FROM users
-            WHERE premium=0 AND banned=0
+            WHERE premium=0
+              AND banned=0
         """).fetchall()
 
     else:
+
         rows = conn.execute("""
             SELECT user_id
             FROM users
@@ -1890,44 +2467,59 @@ async def broadcast_content_handler(update, context):
     total = len(rows)
 
     conn = db()
+
     conn.execute("""
         UPDATE broadcast_jobs
         SET total=?
         WHERE id=?
-    """, (total, job_id))
+    """, (
+        total,
+        job_id
+    ))
+
     conn.commit()
     conn.close()
 
     sent = 0
     failed = 0
 
-    status_message = await update.message.reply_text(
-        f"📢 Broadcast started.\n\n"
-        f"🎯 Target: {target}\n"
-        f"👥 Total: {total}\n"
-        f"✅ Sent: 0\n"
-        f"❌ Failed: 0"
+    status_message = (
+        await update.message.reply_text(
+            f"📢 Broadcast started.\n\n"
+            f"🎯 Target: {target}\n"
+            f"👥 Total: {total}\n"
+            f"✅ Sent: 0\n"
+            f"❌ Failed: 0"
+        )
     )
 
-    for index, row in enumerate(rows, 1):
+    for index, row in enumerate(
+        rows,
+        1
+    ):
 
-        # Check cancellation
         conn = db()
 
         job = conn.execute("""
             SELECT status
             FROM broadcast_jobs
             WHERE id=?
-        """, (job_id,)).fetchone()
+        """, (
+            job_id,
+        )).fetchone()
 
         conn.close()
 
-        if not job or job["status"] == "cancelled":
+        if (
+            not job
+            or job["status"] == "cancelled"
+        ):
             break
 
         uid = row["user_id"]
 
         try:
+
             await context.bot.copy_message(
                 chat_id=uid,
                 from_chat_id=update.effective_chat.id,
@@ -1937,16 +2529,20 @@ async def broadcast_content_handler(update, context):
             sent += 1
 
         except Exception:
+
             failed += 1
 
-        # Update DB every 10 users
-        if index % 10 == 0 or index == total:
+        if (
+            index % 10 == 0
+            or index == total
+        ):
 
             conn = db()
 
             conn.execute("""
                 UPDATE broadcast_jobs
-                SET sent=?, failed=?
+                SET sent=?,
+                    failed=?
                 WHERE id=?
             """, (
                 sent,
@@ -1958,18 +2554,22 @@ async def broadcast_content_handler(update, context):
             conn.close()
 
             try:
+
                 await status_message.edit_text(
                     f"📢 Broadcast running...\n\n"
                     f"🎯 Target: {target}\n"
-                    f"📊 Progress: {index}/{total}\n"
+                    f"📊 Progress: "
+                    f"{index}/{total}\n"
                     f"✅ Sent: {sent}\n"
                     f"❌ Failed: {failed}"
                 )
+
             except Exception:
                 pass
 
-        # Give Telegram/API some breathing room.
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(
+            0.05
+        )
 
     conn = db()
 
@@ -1977,15 +2577,25 @@ async def broadcast_content_handler(update, context):
         SELECT status
         FROM broadcast_jobs
         WHERE id=?
-    """, (job_id,)).fetchone()
+    """, (
+        job_id,
+    )).fetchone()
 
-    final_status = "cancelled" if (
-        job and job["status"] == "cancelled"
-    ) else "completed"
+    final_status = (
+        "cancelled"
+        if (
+            job
+            and job["status"] == "cancelled"
+        )
+        else "completed"
+    )
 
     conn.execute("""
         UPDATE broadcast_jobs
-        SET status=?, sent=?, failed=?, finished_at=?
+        SET status=?,
+            sent=?,
+            failed=?,
+            finished_at=?
         WHERE id=?
     """, (
         final_status,
@@ -1999,6 +2609,7 @@ async def broadcast_content_handler(update, context):
     conn.close()
 
     try:
+
         await status_message.edit_text(
             f"📢 *Broadcast Finished*\n\n"
             f"🎯 Target: {target}\n"
@@ -2008,6 +2619,7 @@ async def broadcast_content_handler(update, context):
             f"📌 Status: {final_status}",
             parse_mode="Markdown"
         )
+
     except Exception:
         pass
 
@@ -2015,21 +2627,215 @@ async def broadcast_content_handler(update, context):
 
 
 # =========================================================
+# PROFESSIONAL LOADING SYSTEM
+# =========================================================
+
+PROGRESS_DATA = {
+
+    10: (
+        "📥",
+        "ফাইল গ্রহণ করা হচ্ছে...",
+        "আপনার ফাইলটি নিরাপদে নেওয়া হয়েছে।"
+    ),
+
+    20: (
+        "🔍",
+        "ফাইল বিশ্লেষণ করা হচ্ছে...",
+        "ডকুমেন্টের গঠন পরীক্ষা চলছে।"
+    ),
+
+    30: (
+        "📑",
+        "পেজ প্রস্তুত করা হচ্ছে...",
+        "প্রয়োজনীয় পেজ ও ডেটা প্রস্তুত করা হচ্ছে।"
+    ),
+
+    40: (
+        "⚙️",
+        "প্রসেসিং শুরু হয়েছে...",
+        "মূল কাজ এখন চলছে।"
+    ),
+
+    50: (
+        "📊",
+        "ডকুমেন্ট প্রসেস করা হচ্ছে...",
+        "ডেটা রূপান্তরের কাজ চলছে।"
+    ),
+
+    60: (
+        "🛠️",
+        "ফাইল আরও প্রসেস করা হচ্ছে...",
+        "প্রায় অর্ধেকের বেশি কাজ সম্পন্ন।"
+    ),
+
+    70: (
+        "✨",
+        "ফাইল অপ্টিমাইজ করা হচ্ছে...",
+        "আউটপুট আরও সুন্দর ও প্রস্তুত করা হচ্ছে।"
+    ),
+
+    80: (
+        "📦",
+        "আউটপুট তৈরি করা হচ্ছে...",
+        "ফাইনাল ফাইল প্রস্তুত হচ্ছে।"
+    ),
+
+    90: (
+        "🚀",
+        "ফাইনাল প্রস্তুতি চলছে...",
+        "আর মাত্র শেষ ধাপ বাকি।"
+    ),
+
+    100: (
+        "✅",
+        "প্রসেসিং সম্পন্ন!",
+        "আপনার ফাইল সফলভাবে প্রস্তুত।"
+    ),
+}
+
+
+def make_progress_bar(
+    percent
+):
+
+    filled = percent // 10
+
+    return (
+        "▰" * filled
+        + "□" * (10 - filled)
+    )
+
+
+def make_progress_text(
+    tool,
+    percent
+):
+
+    icon, title, subtitle = (
+        PROGRESS_DATA.get(
+            percent,
+            (
+                "⚙️",
+                "Processing...",
+                "Please wait..."
+            )
+        )
+    )
+
+    bar = make_progress_bar(
+        percent
+    )
+
+    if percent == 100:
+
+        header = (
+            "🎉 *Rafim PDF Pro*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🏁 *FINAL RESULT READY*"
+        )
+
+    else:
+
+        header = (
+            "🚀 *Rafim PDF Pro*\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "⚡ *SMART PROCESSING MODE*"
+        )
+
+    return (
+        f"{header}\n\n"
+        f"📄 *Tool:* `{tool}`\n\n"
+        f"🔄 *{percent}%*  `{bar}`\n\n"
+        f"{icon} *{title}*\n"
+        f"└─ {subtitle}\n\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"💎 *Professional PDF Processing*\n"
+        f"🔒 Processing securely...\n"
+        f"━━━━━━━━━━━━━━━━━━━━"
+    )
+
+
+async def update_progress(
+    message,
+    tool,
+    percent
+):
+
+    try:
+
+        await message.edit_text(
+            make_progress_text(
+                tool,
+                percent
+            ),
+            parse_mode="Markdown"
+        )
+
+    except Exception:
+        pass
+
+
+async def animate_progress(
+    message,
+    tool,
+    stop_event
+):
+
+    steps = [
+        30,
+        40,
+        50,
+        60,
+        70,
+        80,
+        90
+    ]
+
+    for percent in steps:
+
+        if stop_event.is_set():
+            return
+
+        await update_progress(
+            message,
+            tool,
+            percent
+        )
+
+        # Small delay so the user can see
+        # every stage without flooding Telegram.
+        await asyncio.sleep(
+            0.65
+        )
+
+
+# =========================================================
 # FILE PROCESSING HELPERS
 # =========================================================
 
 def get_cost(tool):
-    return TOOL_COST.get(tool, 1)
+
+    return TOOL_COST.get(
+        tool,
+        1
+    )
 
 
-def can_use_tool(user_id, tool):
+def can_use_tool(
+    user_id,
+    tool
+):
 
-    row = get_user(user_id)
+    row = get_user(
+        user_id
+    )
 
     if not row:
         return False, 0
 
-    cost = get_cost(tool)
+    cost = get_cost(
+        tool
+    )
 
     if row["credits"] < cost:
         return False, cost
@@ -2037,33 +2843,20 @@ def can_use_tool(user_id, tool):
     return True, cost
 
 
-def make_progress_text(tool, percent):
-    return (
-        f"⏳ *{tool}*\n\n"
-        f"Progress: {percent}%"
-    )
-
-
-async def process_progress(message, tool):
-    for percent in [10, 20, 30]:
-        try:
-            await message.edit_text(
-                make_progress_text(tool, percent),
-                parse_mode="Markdown"
-            )
-        except Exception:
-            pass
-
-        await asyncio.sleep(0.1)
-
-
 # =========================================================
 # PDF PROCESSOR
 # =========================================================
 
-async def process_pdf(file_path, tool, output_dir, context):
+async def process_pdf(
+    file_path,
+    tool,
+    output_dir,
+    context
+):
 
-    doc = fitz.open(file_path)
+    doc = fitz.open(
+        file_path
+    )
 
     output = None
 
@@ -2072,17 +2865,22 @@ async def process_pdf(file_path, tool, output_dir, context):
         word = WordDocument()
 
         for page in doc:
+
             text = page.get_text()
 
             if text.strip():
-                word.add_paragraph(text)
+                word.add_paragraph(
+                    text
+                )
 
         output = os.path.join(
             output_dir,
             "converted.docx"
         )
 
-        word.save(output)
+        word.save(
+            output
+        )
 
     elif tool == "PDF → TXT":
 
@@ -2098,12 +2896,25 @@ async def process_pdf(file_path, tool, output_dir, context):
         ) as f:
 
             for page in doc:
-                f.write(page.get_text())
-                f.write("\n\n")
 
-    elif tool in ["PDF → JPG", "PDF → PNG"]:
+                f.write(
+                    page.get_text()
+                )
 
-        ext = "jpg" if tool.endswith("JPG") else "png"
+                f.write(
+                    "\n\n"
+                )
+
+    elif tool in [
+        "PDF → JPG",
+        "PDF → PNG"
+    ]:
+
+        ext = (
+            "jpg"
+            if tool.endswith("JPG")
+            else "png"
+        )
 
         output = os.path.join(
             output_dir,
@@ -2113,11 +2924,16 @@ async def process_pdf(file_path, tool, output_dir, context):
         page = doc[0]
 
         pix = page.get_pixmap(
-            matrix=fitz.Matrix(2, 2),
+            matrix=fitz.Matrix(
+                2,
+                2
+            ),
             alpha=False
         )
 
-        pix.save(output)
+        pix.save(
+            output
+        )
 
     elif tool == "Compress PDF":
 
@@ -2129,6 +2945,7 @@ async def process_pdf(file_path, tool, output_dir, context):
         new_doc = fitz.open()
 
         for page in doc:
+
             new_doc.insert_pdf(
                 doc,
                 from_page=page.number,
@@ -2154,13 +2971,17 @@ async def process_pdf(file_path, tool, output_dir, context):
         new_doc = fitz.open()
 
         if len(doc) > 0:
+
             new_doc.insert_pdf(
                 doc,
                 from_page=0,
                 to_page=0
             )
 
-        new_doc.save(output)
+        new_doc.save(
+            output
+        )
+
         new_doc.close()
 
     elif tool == "Extract Pages":
@@ -2173,13 +2994,17 @@ async def process_pdf(file_path, tool, output_dir, context):
         new_doc = fitz.open()
 
         if len(doc) > 0:
+
             new_doc.insert_pdf(
                 doc,
                 from_page=0,
                 to_page=0
             )
 
-        new_doc.save(output)
+        new_doc.save(
+            output
+        )
+
         new_doc.close()
 
     elif tool == "Rotate PDF":
@@ -2190,11 +3015,17 @@ async def process_pdf(file_path, tool, output_dir, context):
         )
 
         for page in doc:
+
             page.set_rotation(
-                (page.rotation + 90) % 360
+                (
+                    page.rotation
+                    + 90
+                ) % 360
             )
 
-        doc.save(output)
+        doc.save(
+            output
+        )
 
     elif tool == "PDF Page Size":
 
@@ -2206,6 +3037,7 @@ async def process_pdf(file_path, tool, output_dir, context):
         new_doc = fitz.open()
 
         for page in doc:
+
             rect = page.rect
 
             new_page = new_doc.new_page(
@@ -2219,7 +3051,10 @@ async def process_pdf(file_path, tool, output_dir, context):
                 page.number
             )
 
-        new_doc.save(output)
+        new_doc.save(
+            output
+        )
+
         new_doc.close()
 
     elif tool == "Add Page Numbers":
@@ -2231,15 +3066,23 @@ async def process_pdf(file_path, tool, output_dir, context):
 
         total = len(doc)
 
-        for i, page in enumerate(doc, 1):
+        for i, page in enumerate(
+            doc,
+            1
+        ):
 
             page.insert_text(
-                (page.rect.width / 2, page.rect.height - 25),
+                (
+                    page.rect.width / 2,
+                    page.rect.height - 25
+                ),
                 f"{i} / {total}",
                 fontsize=10
             )
 
-        doc.save(output)
+        doc.save(
+            output
+        )
 
     elif tool == "Add Watermark":
 
@@ -2256,12 +3099,18 @@ async def process_pdf(file_path, tool, output_dir, context):
                 fontsize=30,
                 rotate=45,
                 align=1,
-                color=(0.5, 0.5, 0.5),
+                color=(
+                    0.5,
+                    0.5,
+                    0.5
+                ),
                 fill_opacity=0.15,
                 stroke_opacity=0
             )
 
-        doc.save(output)
+        doc.save(
+            output
+        )
 
     elif tool == "Remove Metadata":
 
@@ -2272,7 +3121,9 @@ async def process_pdf(file_path, tool, output_dir, context):
 
         doc.set_metadata({})
 
-        doc.save(output)
+        doc.save(
+            output
+        )
 
     elif tool == "PDF Info":
 
@@ -2298,7 +3149,8 @@ async def process_pdf(file_path, tool, output_dir, context):
             )
 
             f.write(
-                f"\n\nPages: {len(doc)}\n"
+                f"\n\nPages: "
+                f"{len(doc)}\n"
             )
 
     elif tool == "Protect PDF":
@@ -2327,22 +3179,36 @@ async def process_pdf(file_path, tool, output_dir, context):
             "temp.pdf"
         )
 
-        doc.save(temp_pdf)
+        doc.save(
+            temp_pdf
+        )
 
-        proc = await asyncio.create_subprocess_exec(
-            "gs",
-            "-dBATCH",
-            "-dNOPAUSE",
-            "-sDEVICE=xps2",
-            f"-sOutputFile={output}",
-            temp_pdf,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
+        proc = (
+            await asyncio
+            .create_subprocess_exec(
+                "gs",
+                "-dBATCH",
+                "-dNOPAUSE",
+                "-sDEVICE=xps2",
+                f"-sOutputFile={output}",
+                temp_pdf,
+                stdout=(
+                    asyncio
+                    .subprocess
+                    .PIPE
+                ),
+                stderr=(
+                    asyncio
+                    .subprocess
+                    .PIPE
+                )
+            )
         )
 
         await proc.communicate()
 
         if not os.path.exists(output):
+
             raise RuntimeError(
                 "XPS conversion failed."
             )
@@ -2354,7 +3220,9 @@ async def process_pdf(file_path, tool, output_dir, context):
             "output.pdf"
         )
 
-        doc.save(output)
+        doc.save(
+            output
+        )
 
     doc.close()
 
@@ -2365,9 +3233,13 @@ async def process_pdf(file_path, tool, output_dir, context):
 # DOCUMENT HANDLER
 # =========================================================
 
-async def document_handler(update, context):
+async def document_handler(
+    update,
+    context
+):
 
     user = update.effective_user
+
     ensure_user(user)
 
     if is_banned(user.id):
@@ -2385,7 +3257,9 @@ async def document_handler(update, context):
     ):
         return
 
-    tool = context.user_data.get("selected_tool")
+    tool = context.user_data.get(
+        "selected_tool"
+    )
 
     if not tool:
         return
@@ -2393,18 +3267,26 @@ async def document_handler(update, context):
     if not update.message.document:
         return
 
-    file_size = update.message.document.file_size or 0
+    file_size = (
+        update.message.document.file_size
+        or 0
+    )
+
     limit = (
         PREMIUM_FILE_LIMIT_MB
         if is_premium(user.id)
         else FREE_FILE_LIMIT_MB
     )
 
-    if file_size > limit * 1024 * 1024:
+    if file_size > (
+        limit * 1024 * 1024
+    ):
+
         await update.message.reply_text(
             f"❌ File too large.\n"
             f"Your limit is {limit} MB."
         )
+
         return
 
     ok, cost = can_use_tool(
@@ -2413,33 +3295,53 @@ async def document_handler(update, context):
     )
 
     if not ok:
+
         await update.message.reply_text(
             f"❌ Not enough credits.\n\n"
             f"💰 Required: {cost}\n"
-            f"💳 Your credits: {get_user(user.id)['credits']}"
+            f"💳 Your credits: "
+            f"{get_user(user.id)['credits']}"
         )
+
         return
 
+    # -----------------------------------------------------
+    # PROFESSIONAL SAME-MESSAGE LOADING
+    # -----------------------------------------------------
+
     status = await update.message.reply_text(
-        make_progress_text(tool, 10),
+        make_progress_text(
+            tool,
+            10
+        ),
         parse_mode="Markdown"
     )
 
-    await process_progress(
-        status,
-        tool
+    await asyncio.sleep(
+        0.35
     )
 
     tmp_dir = tempfile.mkdtemp()
 
     input_path = os.path.join(
         tmp_dir,
-        update.message.document.file_name or "input.pdf"
+        update.message.document.file_name
+        or "input.pdf"
     )
 
     output_dir = tmp_dir
 
+    stop_event = None
+    progress_task = None
+
     try:
+
+        # 20%
+        await update_progress(
+            status,
+            tool,
+            20
+        )
 
         tg_file = await context.bot.get_file(
             update.message.document.file_id
@@ -2449,11 +3351,55 @@ async def document_handler(update, context):
             input_path
         )
 
+        await asyncio.sleep(
+            0.25
+        )
+
+        # 30% starts when actual processing begins
+        await update_progress(
+            status,
+            tool,
+            30
+        )
+
+        stop_event = asyncio.Event()
+
+        # Animate 30 -> 90 while the real processor works.
+        progress_task = asyncio.create_task(
+            animate_progress(
+                status,
+                tool,
+                stop_event
+            )
+        )
+
+        # REAL PROCESSING
         output = await process_pdf(
             input_path,
             tool,
             output_dir,
             context
+        )
+
+        # Stop animation after real processing finishes.
+        stop_event.set()
+
+        if progress_task:
+
+            try:
+                await progress_task
+            except Exception:
+                pass
+
+        # 100% ONLY AFTER SUCCESSFUL PROCESSING
+        await update_progress(
+            status,
+            tool,
+            100
+        )
+
+        await asyncio.sleep(
+            0.8
         )
 
         remove_credits(
@@ -2462,7 +3408,10 @@ async def document_handler(update, context):
             f"Tool: {tool}"
         )
 
-        add_xp(user.id, 2)
+        add_xp(
+            user.id,
+            2
+        )
 
         log_history(
             user.id,
@@ -2471,19 +3420,36 @@ async def document_handler(update, context):
             cost
         )
 
+        # Final sending message in SAME status message
         try:
+
             await status.edit_text(
-                make_progress_text(tool, 100),
+                "🎉 *Rafim PDF Pro*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "✅ *PROCESSING COMPLETE*\n\n"
+                f"📄 Tool: `{tool}`\n"
+                "🔄 Progress: `100%` "
+                "`▰▰▰▰▰▰▰▰▰▰`\n\n"
+                "📦 Your file is ready.\n"
+                "📤 Sending your file now...\n\n"
+                "━━━━━━━━━━━━━━━━━━━━\n"
+                "✨ Thank you for using Rafim PDF Pro!",
                 parse_mode="Markdown"
             )
+
         except Exception:
             pass
 
-        with open(output, "rb") as f:
+        with open(
+            output,
+            "rb"
+        ) as f:
 
             await update.message.reply_document(
                 document=f,
-                filename=os.path.basename(output),
+                filename=os.path.basename(
+                    output
+                ),
                 caption=(
                     f"✅ *{tool} completed!*\n\n"
                     f"💰 Cost: {cost} credits"
@@ -2491,7 +3457,17 @@ async def document_handler(update, context):
                 parse_mode="Markdown"
             )
 
-    except Exception as e:
+    except Exception:
+
+        if stop_event:
+            stop_event.set()
+
+        if progress_task:
+
+            try:
+                await progress_task
+            except Exception:
+                pass
 
         log_history(
             user.id,
@@ -2500,16 +3476,37 @@ async def document_handler(update, context):
             0
         )
 
-        await update.message.reply_text(
-            "❌ Processing failed.\n"
-            "You were not charged."
-        )
+        try:
+
+            await status.edit_text(
+                "⚠️ *Rafim PDF Pro*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "❌ *PROCESSING FAILED*\n\n"
+                "Something went wrong while "
+                "processing your file.\n\n"
+                "💰 *You were NOT charged.*\n"
+                "🔁 Please try again.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━",
+                parse_mode="Markdown"
+            )
+
+        except Exception:
+
+            await update.message.reply_text(
+                "❌ Processing failed.\n"
+                "You were not charged."
+            )
 
     finally:
 
         try:
+
             import shutil
-            shutil.rmtree(tmp_dir)
+
+            shutil.rmtree(
+                tmp_dir
+            )
+
         except Exception:
             pass
 
@@ -2535,15 +3532,24 @@ async def process_image(
 
     output = None
 
-    if tool in ["Compress Image", "Image Compressor"]:
+    if tool in [
+        "Compress Image",
+        "Image Compressor"
+    ]:
 
         output = os.path.join(
             output_dir,
             "compressed.jpg"
         )
 
-        if img.mode not in ["RGB", "L"]:
-            img = img.convert("RGB")
+        if img.mode not in [
+            "RGB",
+            "L"
+        ]:
+
+            img = img.convert(
+                "RGB"
+            )
 
         img.save(
             output,
@@ -2574,12 +3580,22 @@ async def process_image(
 
         max_width = 1280
 
-        ratio = max_width / img.width
+        ratio = (
+            max_width
+            / img.width
+        )
 
         if ratio < 1:
+
             new_size = (
-                int(img.width * ratio),
-                int(img.height * ratio)
+                int(
+                    img.width
+                    * ratio
+                ),
+                int(
+                    img.height
+                    * ratio
+                )
             )
 
             img = img.resize(
@@ -2592,8 +3608,14 @@ async def process_image(
             "resized.jpg"
         )
 
-        if img.mode not in ["RGB", "L"]:
-            img = img.convert("RGB")
+        if img.mode not in [
+            "RGB",
+            "L"
+        ]:
+
+            img = img.convert(
+                "RGB"
+            )
 
         img.save(
             output,
@@ -2621,14 +3643,20 @@ async def process_image(
             "image.jpg"
         )
 
-        img.save(output)
+        img.save(
+            output
+        )
 
     return output
 
 
-async def photo_handler(update, context):
+async def photo_handler(
+    update,
+    context
+):
 
     user = update.effective_user
+
     ensure_user(user)
 
     if is_banned(user.id):
@@ -2653,19 +3681,23 @@ async def photo_handler(update, context):
     )
 
     if not ok:
+
         await update.message.reply_text(
             "❌ Not enough credits."
         )
+
         return
 
     status = await update.message.reply_text(
-        make_progress_text(tool, 10),
+        make_progress_text(
+            tool,
+            10
+        ),
         parse_mode="Markdown"
     )
 
-    await process_progress(
-        status,
-        tool
+    await asyncio.sleep(
+        0.35
     )
 
     tmp_dir = tempfile.mkdtemp()
@@ -2675,7 +3707,16 @@ async def photo_handler(update, context):
         "input.jpg"
     )
 
+    stop_event = None
+    progress_task = None
+
     try:
+
+        await update_progress(
+            status,
+            tool,
+            20
+        )
 
         tg_file = await context.bot.get_file(
             update.message.photo[-1].file_id
@@ -2685,10 +3726,49 @@ async def photo_handler(update, context):
             input_path
         )
 
+        await asyncio.sleep(
+            0.25
+        )
+
+        await update_progress(
+            status,
+            tool,
+            30
+        )
+
+        stop_event = asyncio.Event()
+
+        progress_task = asyncio.create_task(
+            animate_progress(
+                status,
+                tool,
+                stop_event
+            )
+        )
+
         output = await process_image(
             input_path,
             tool,
             tmp_dir
+        )
+
+        stop_event.set()
+
+        if progress_task:
+
+            try:
+                await progress_task
+            except Exception:
+                pass
+
+        await update_progress(
+            status,
+            tool,
+            100
+        )
+
+        await asyncio.sleep(
+            0.8
         )
 
         remove_credits(
@@ -2697,7 +3777,10 @@ async def photo_handler(update, context):
             f"Tool: {tool}"
         )
 
-        add_xp(user.id, 2)
+        add_xp(
+            user.id,
+            2
+        )
 
         log_history(
             user.id,
@@ -2706,11 +3789,34 @@ async def photo_handler(update, context):
             cost
         )
 
-        with open(output, "rb") as f:
+        try:
+
+            await status.edit_text(
+                "🎉 *Rafim PDF Pro*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "✅ *IMAGE PROCESSING COMPLETE*\n\n"
+                f"🖼️ Tool: `{tool}`\n"
+                "🔄 Progress: `100%` "
+                "`▰▰▰▰▰▰▰▰▰▰`\n\n"
+                "📦 Your image is ready.\n"
+                "📤 Sending it now...\n\n"
+                "━━━━━━━━━━━━━━━━━━━━",
+                parse_mode="Markdown"
+            )
+
+        except Exception:
+            pass
+
+        with open(
+            output,
+            "rb"
+        ) as f:
 
             await update.message.reply_document(
                 document=f,
-                filename=os.path.basename(output),
+                filename=os.path.basename(
+                    output
+                ),
                 caption=(
                     f"✅ *{tool} completed!*\n\n"
                     f"💰 Cost: {cost}"
@@ -2720,6 +3826,16 @@ async def photo_handler(update, context):
 
     except Exception:
 
+        if stop_event:
+            stop_event.set()
+
+        if progress_task:
+
+            try:
+                await progress_task
+            except Exception:
+                pass
+
         log_history(
             user.id,
             tool,
@@ -2727,15 +3843,35 @@ async def photo_handler(update, context):
             0
         )
 
-        await update.message.reply_text(
-            "❌ Image processing failed."
-        )
+        try:
+
+            await status.edit_text(
+                "⚠️ *Rafim PDF Pro*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "❌ *IMAGE PROCESSING FAILED*\n\n"
+                "The image could not be processed.\n\n"
+                "💰 *You were NOT charged.*\n"
+                "🔁 Please try again.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━",
+                parse_mode="Markdown"
+            )
+
+        except Exception:
+
+            await update.message.reply_text(
+                "❌ Image processing failed."
+            )
 
     finally:
 
         try:
+
             import shutil
-            shutil.rmtree(tmp_dir)
+
+            shutil.rmtree(
+                tmp_dir
+            )
+
         except Exception:
             pass
 
@@ -2749,9 +3885,13 @@ async def photo_handler(update, context):
 # TEXT PROCESSOR / MENU
 # =========================================================
 
-async def text_handler(update, context):
+async def text_handler(
+    update,
+    context
+):
 
     user = update.effective_user
+
     ensure_user(user)
 
     if is_banned(user.id):
@@ -2780,76 +3920,95 @@ async def text_handler(update, context):
     ).strip()
 
     if text == "📕 PDF Tools":
+
         await pdf_menu(
             update,
             context
         )
+
         return
 
     if text == "🖼️ Image Tools":
+
         await image_menu(
             update,
             context
         )
+
         return
 
     if text == "💎 Premium":
+
         await premium_menu(
             update,
             context
         )
+
         return
 
     if text == "👤 My Account":
+
         await account(
             update,
             context
         )
+
         return
 
     if text == "🎁 Daily Bonus":
+
         await daily_bonus(
             update,
             context
         )
+
         return
 
     if text == "👥 Refer & Earn":
+
         await refer(
             update,
             context
         )
+
         return
 
     if text == "🎟️ Redeem Code":
+
         await redeem_button(
             update,
             context
         )
+
         return
 
     if text == "📜 History":
+
         await history(
             update,
             context
         )
+
         return
 
     if text == "🆘 Support":
+
         await support(
             update,
             context
         )
+
         return
 
     if text == "⚙️ Settings":
+
         await settings(
             update,
             context
         )
+
         return
 
-    # Image/PDF input instructions
     tool = context.user_data.get(
         "selected_tool"
     )
@@ -2861,7 +4020,8 @@ async def text_handler(update, context):
             await update.message.reply_text(
                 f"📎 Please send the file for:\n\n"
                 f"*{tool}*\n\n"
-                f"💰 Cost: {TOOL_COST[tool]} credits",
+                f"💰 Cost: "
+                f"{TOOL_COST[tool]} credits",
                 parse_mode="Markdown"
             )
 
@@ -2872,7 +4032,10 @@ async def text_handler(update, context):
 # CALLBACK HANDLER
 # =========================================================
 
-async def callback_handler(update, context):
+async def callback_handler(
+    update,
+    context
+):
 
     query = update.callback_query
 
@@ -2890,6 +4053,7 @@ async def callback_handler(update, context):
             "🏠 Main Menu",
             reply_markup=MAIN_MARKUP
         )
+
         return
 
     if data == "pdf_menu":
@@ -2897,6 +4061,7 @@ async def callback_handler(update, context):
         await query.message.reply_text(
             "📕 Open PDF Tools from the main menu."
         )
+
         return
 
     if data == "image_menu":
@@ -2904,6 +4069,7 @@ async def callback_handler(update, context):
         await query.message.reply_text(
             "🖼️ Open Image Tools from the main menu."
         )
+
         return
 
     if data.startswith("pdf_"):
@@ -2930,13 +4096,19 @@ async def callback_handler(update, context):
             "pdf_info": "PDF Info",
         }
 
-        tool = tool_map.get(data)
+        tool = tool_map.get(
+            data
+        )
 
         if tool:
 
-            context.user_data["selected_tool"] = tool
+            context.user_data[
+                "selected_tool"
+            ] = tool
 
-            cost = get_cost(tool)
+            cost = get_cost(
+                tool
+            )
 
             await query.message.reply_text(
                 f"🛠️ *{tool}*\n\n"
@@ -2951,24 +4123,42 @@ async def callback_handler(update, context):
 
         tool_map = {
 
-            "img_compress": "Compress Image",
-            "img_png": "Convert PNG",
-            "img_resize": "Resize Image",
-            "img_convert": "JPG ↔ PNG",
-            "img_custom": "Custom Resize",
-            "img_webp": "Image → WebP",
-            "img_multi_pdf": "Multiple Images → PDF",
+            "img_compress":
+                "Compress Image",
+
+            "img_png":
+                "Convert PNG",
+
+            "img_resize":
+                "Resize Image",
+
+            "img_convert":
+                "JPG ↔ PNG",
+
+            "img_custom":
+                "Custom Resize",
+
+            "img_webp":
+                "Image → WebP",
+
+            "img_multi_pdf":
+                "Multiple Images → PDF",
         }
 
-        tool = tool_map.get(data)
+        tool = tool_map.get(
+            data
+        )
 
         if tool:
 
-            context.user_data["selected_tool"] = tool
+            context.user_data[
+                "selected_tool"
+            ] = tool
 
             await query.message.reply_text(
                 f"🖼️ *{tool}*\n\n"
-                f"💰 Cost: {get_cost(tool)} credits\n\n"
+                f"💰 Cost: "
+                f"{get_cost(tool)} credits\n\n"
                 "📎 Send your image.",
                 parse_mode="Markdown"
             )
@@ -2983,6 +4173,7 @@ async def callback_handler(update, context):
             "Weekly",
             WEEKLY_PRICE
         )
+
         return
 
     if data == "premium_monthly":
@@ -2993,9 +4184,12 @@ async def callback_handler(update, context):
             "Monthly",
             MONTHLY_PRICE
         )
+
         return
 
-    if data.startswith("approve_premium_"):
+    if data.startswith(
+        "approve_premium_"
+    ):
 
         if user.id != ADMIN_ID:
             return
@@ -3013,25 +4207,32 @@ async def callback_handler(update, context):
             SELECT *
             FROM premium_requests
             WHERE id=?
-        """, (request_id,)).fetchone()
+        """, (
+            request_id,
+        )).fetchone()
 
         if not row:
+
             conn.close()
             return
 
         if row["status"] != "pending":
+
             conn.close()
 
             await query.message.reply_text(
                 "⚠️ This request was already processed."
             )
+
             return
 
         conn.execute("""
             UPDATE premium_requests
             SET status='approved'
             WHERE id=?
-        """, (request_id,))
+        """, (
+            request_id,
+        ))
 
         conn.commit()
         conn.close()
@@ -3046,6 +4247,7 @@ async def callback_handler(update, context):
         )
 
         try:
+
             await context.bot.send_message(
                 row["user_id"],
                 "🎉 *Premium Activated!*\n\n"
@@ -3053,12 +4255,15 @@ async def callback_handler(update, context):
                 "Enjoy your premium benefits!",
                 parse_mode="Markdown"
             )
+
         except Exception:
             pass
 
         return
 
-    if data.startswith("reject_premium_"):
+    if data.startswith(
+        "reject_premium_"
+    ):
 
         if user.id != ADMIN_ID:
             return
@@ -3076,25 +4281,32 @@ async def callback_handler(update, context):
             SELECT *
             FROM premium_requests
             WHERE id=?
-        """, (request_id,)).fetchone()
+        """, (
+            request_id,
+        )).fetchone()
 
         if not row:
+
             conn.close()
             return
 
         if row["status"] != "pending":
+
             conn.close()
 
             await query.message.reply_text(
                 "⚠️ Already processed."
             )
+
             return
 
         conn.execute("""
             UPDATE premium_requests
             SET status='rejected'
             WHERE id=?
-        """, (request_id,))
+        """, (
+            request_id,
+        ))
 
         conn.commit()
         conn.close()
@@ -3104,11 +4316,13 @@ async def callback_handler(update, context):
         )
 
         try:
+
             await context.bot.send_message(
                 row["user_id"],
                 "❌ Your premium request was rejected.\n\n"
                 "Please contact support if you think this was a mistake."
             )
+
         except Exception:
             pass
 
@@ -3122,13 +4336,17 @@ async def callback_handler(update, context):
             UPDATE users
             SET language='bn'
             WHERE user_id=?
-        """, (user.id,))
+        """, (
+            user.id,
+        ))
 
         conn.execute("""
             UPDATE user_settings
             SET language='bn'
             WHERE user_id=?
-        """, (user.id,))
+        """, (
+            user.id,
+        ))
 
         conn.commit()
         conn.close()
@@ -3136,6 +4354,7 @@ async def callback_handler(update, context):
         await query.message.reply_text(
             "🇧🇩 বাংলা ভাষা সেট করা হয়েছে।"
         )
+
         return
 
     if data == "lang_en":
@@ -3146,13 +4365,17 @@ async def callback_handler(update, context):
             UPDATE users
             SET language='en'
             WHERE user_id=?
-        """, (user.id,))
+        """, (
+            user.id,
+        ))
 
         conn.execute("""
             UPDATE user_settings
             SET language='en'
             WHERE user_id=?
-        """, (user.id,))
+        """, (
+            user.id,
+        ))
 
         conn.commit()
         conn.close()
@@ -3160,6 +4383,7 @@ async def callback_handler(update, context):
         await query.message.reply_text(
             "🇺🇸 English language selected."
         )
+
         return
 
     if data == "toggle_notifications":
@@ -3170,19 +4394,37 @@ async def callback_handler(update, context):
             SELECT notifications
             FROM user_settings
             WHERE user_id=?
-        """, (user.id,)).fetchone()
+        """, (
+            user.id,
+        )).fetchone()
 
-        current = row["notifications"] if row else 1
+        current = (
+            row["notifications"]
+            if row
+            else 1
+        )
 
-        new_value = 0 if current else 1
+        new_value = (
+            0
+            if current
+            else 1
+        )
 
         conn.execute("""
             INSERT OR REPLACE INTO user_settings
-            (user_id, language, notifications)
+            (
+                user_id,
+                language,
+                notifications
+            )
             VALUES (
                 ?,
                 COALESCE(
-                    (SELECT language FROM user_settings WHERE user_id=?),
+                    (
+                        SELECT language
+                        FROM user_settings
+                        WHERE user_id=?
+                    ),
                     'en'
                 ),
                 ?
@@ -3197,7 +4439,7 @@ async def callback_handler(update, context):
         conn.close()
 
         await query.message.reply_text(
-            f"🔔 Notifications: "
+            "🔔 Notifications: "
             f"{'ON' if new_value else 'OFF'}"
         )
 
@@ -3208,7 +4450,10 @@ async def callback_handler(update, context):
 # MERGE PDF
 # =========================================================
 
-async def merge_pdf_handler(update, context):
+async def merge_pdf_handler(
+    update,
+    context
+):
 
     if not update.message:
         return
@@ -3251,7 +4496,9 @@ async def merge_pdf_handler(update, context):
         path
     )
 
-    files.append(path)
+    files.append(
+        path
+    )
 
     await update.message.reply_text(
         f"📎 Added PDF #{len(files)}.\n\n"
@@ -3261,7 +4508,10 @@ async def merge_pdf_handler(update, context):
     )
 
 
-async def done_merge(update, context):
+async def done_merge(
+    update,
+    context
+):
 
     if not context.user_data.get(
         "merge_mode"
@@ -3280,9 +4530,12 @@ async def done_merge(update, context):
         await update.message.reply_text(
             "❌ Send at least 2 PDF files."
         )
+
         return
 
-    cost = get_cost("Merge PDF")
+    cost = get_cost(
+        "Merge PDF"
+    )
 
     ok, _ = can_use_tool(
         user.id,
@@ -3294,6 +4547,7 @@ async def done_merge(update, context):
         await update.message.reply_text(
             "❌ Not enough credits."
         )
+
         return
 
     output = os.path.join(
@@ -3307,13 +4561,20 @@ async def done_merge(update, context):
 
         for path in files:
 
-            doc = fitz.open(path)
+            doc = fitz.open(
+                path
+            )
 
-            result.insert_pdf(doc)
+            result.insert_pdf(
+                doc
+            )
 
             doc.close()
 
-        result.save(output)
+        result.save(
+            output
+        )
+
         result.close()
 
         remove_credits(
@@ -3322,7 +4583,10 @@ async def done_merge(update, context):
             "Tool: Merge PDF"
         )
 
-        add_xp(user.id, 3)
+        add_xp(
+            user.id,
+            3
+        )
 
         log_history(
             user.id,
@@ -3331,7 +4595,10 @@ async def done_merge(update, context):
             cost
         )
 
-        with open(output, "rb") as f:
+        with open(
+            output,
+            "rb"
+        ) as f:
 
             await update.message.reply_document(
                 document=f,
@@ -3360,10 +4627,15 @@ async def done_merge(update, context):
     finally:
 
         try:
+
             import shutil
+
             shutil.rmtree(
-                context.user_data["merge_dir"]
+                context.user_data[
+                    "merge_dir"
+                ]
             )
+
         except Exception:
             pass
 
@@ -3387,7 +4659,9 @@ async def done_merge(update, context):
 # BOT COMMAND MENU
 # =========================================================
 
-async def setup_commands(app):
+async def setup_commands(
+    app
+):
 
     from telegram import BotCommand
 
@@ -3468,7 +4742,6 @@ def main():
 
     init_db()
 
-    # Render web server
     threading.Thread(
         target=run_web,
         daemon=True
@@ -3683,7 +4956,6 @@ def main():
 
     # -----------------------------------------------------
     # BROADCAST MESSAGE HANDLER
-    # MUST COME BEFORE NORMAL FILE/TEXT HANDLERS
     # -----------------------------------------------------
 
     application.add_handler(
@@ -3746,12 +5018,18 @@ def main():
     # START
     # -----------------------------------------------------
 
-    async def post_init(app):
-        await setup_commands(app)
+    async def post_init(
+        app
+    ):
+        await setup_commands(
+            app
+        )
 
     application.post_init = post_init
 
-    print("Rafim PDF Pro started.")
+    print(
+        "Rafim PDF Pro started."
+    )
 
     application.run_polling(
         allowed_updates=Update.ALL_TYPES
