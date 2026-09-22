@@ -1,43 +1,44 @@
+# bot.py
 # ============================================================
-# RAFIM PDF PRO — ALL-IN-ONE TELEGRAM BOT
-# ============================================================
-# Render Start Command:
-#     python bot.py
+# RAFIM TOOLS BOT
+# API-Free Utility + Premium + Credits + Referral + Redeem
+# Audio / Video / FFmpeg removed
 #
-# requirements.txt:
-#     python-telegram-bot
-#     PyMuPDF
-#     Pillow
-#     python-docx
-#     Flask
-#
-# Environment:
-#     BOT_TOKEN=YOUR_BOT_TOKEN
-#     ADMIN_ID=YOUR_ADMIN_ID
-#     SUPPORT_USERNAME=rafimhossen
-#     BKASH_NUMBER=YOUR_BKASH_NUMBER
-#     NAGAD_NUMBER=YOUR_NAGAD_NUMBER
+# Render Environment Variables ONLY:
+# BOT_TOKEN
+# ADMIN_ID
+# SUPPORT_USERNAME
 # ============================================================
 
 import os
 import io
 import re
+import ast
 import json
-import time
+import base64
 import uuid
-import zipfile
+import math
+import random
+import string
 import shutil
 import sqlite3
 import asyncio
+import secrets
+import hashlib
 import tempfile
-import threading
 import subprocess
 from datetime import datetime, date, timedelta
+from functools import wraps
+from urllib.parse import quote, unquote
 
 import fitz
-from PIL import Image, ImageOps, ImageEnhance
+import qrcode
+
+from PIL import Image, ImageOps, ImageEnhance, ImageDraw, ImageFont
 from docx import Document
 from flask import Flask
+
+from cryptography.fernet import Fernet
 
 from telegram import (
     Update,
@@ -46,6 +47,7 @@ from telegram import (
     ReplyKeyboardMarkup,
 )
 from telegram.constants import ParseMode
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -53,9 +55,8 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
     filters,
+    ApplicationHandlerStop,
 )
-from telegram.error import TelegramError
-from telegram.ext import ApplicationHandlerStop
 
 
 # ============================================================
@@ -64,2589 +65,2181 @@ from telegram.ext import ApplicationHandlerStop
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
-ADMIN_ID = int(os.getenv("ADMIN_ID", "8298133943"))
-SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "rafimhossen")
+try:
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "0").strip())
+except Exception:
+    ADMIN_ID = 0
 
-# ------------------------------------------------------------
-# PREMIUM PAYMENT NUMBERS
-# ------------------------------------------------------------
-BKASH_NUMBER = os.getenv(
-    "BKASH_NUMBER",
-    "YOUR bKASH NUMBER"
-).strip()
+SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "rafimhossen").strip().lstrip("@")
 
-NAGAD_NUMBER = os.getenv(
-    "NAGAD_NUMBER",
-    "YOUR NAGAD NUMBER"
-).strip()
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN environment variable is missing.")
 
-DB_FILE = os.getenv("DB_FILE", "rafim_pdf_pro.db")
+if ADMIN_ID <= 0:
+    raise RuntimeError("ADMIN_ID environment variable is missing or invalid.")
 
-FREE_CREDITS = int(os.getenv("FREE_CREDITS", "10"))
-DAILY_BONUS = int(os.getenv("DAILY_BONUS", "3"))
+DB_FILE = "rafim_tools.db"
+TEMP_DIR = "tmp_files"
 
-FREE_FILE_LIMIT_MB = int(os.getenv("FREE_FILE_LIMIT_MB", "20"))
-PREMIUM_FILE_LIMIT_MB = int(os.getenv("PREMIUM_FILE_LIMIT_MB", "100"))
-
-WEEKLY_PRICE = int(os.getenv("WEEKLY_PRICE", "50"))
-MONTHLY_PRICE = int(os.getenv("MONTHLY_PRICE", "150"))
-
-REFERRAL_REWARD = int(os.getenv("REFERRAL_REWARD", "5"))
-REFERRAL_XP = int(os.getenv("REFERRAL_XP", "20"))
-
-XP_SUCCESS = int(os.getenv("XP_SUCCESS", "5"))
-
-TEMP_DIR = "rafim_temp"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-app_flask = Flask(__name__)
+# সব Default value bot.py-এর ভিতরে
+FREE_CREDITS = 10
+DAILY_BONUS = 3
+REFERRAL_REWARD = 5
+REFERRAL_XP = 20
+XP_SUCCESS = 5
+
+FREE_FILE_LIMIT_MB = 20
+PREMIUM_FILE_LIMIT_MB = 100
+
+WEEKLY_PRICE = 50
+MONTHLY_PRICE = 150
+
+# Payment number code-এর ভিতরে রাখা হয়েছে।
+# নিজের নম্বর চাইলে শুধু এখানেই পরিবর্তন করবে।
+BKASH_NUMBER = "CHANGE_THIS_BKASH_NUMBER"
+NAGAD_NUMBER = "CHANGE_THIS_NAGAD_NUMBER"
 
 
-@app_flask.route("/")
+# ============================================================
+# FLASK HEALTH SERVER FOR RENDER
+# ============================================================
+
+app = Flask(__name__)
+
+
+@app.route("/")
 def home():
-    return "Rafim PDF Pro is running!"
+    return "Rafim Tools Bot is Running ✅"
 
 
-@app_flask.route("/health")
+@app.route("/health")
 def health():
     return "OK"
 
 
-def run_flask():
-    port = int(os.getenv("PORT", "10000"))
-    app_flask.run(host="0.0.0.0", port=port)
-
-
-threading.Thread(target=run_flask, daemon=True).start()
+def run_web():
+    port = int(os.environ.get("PORT", "10000"))
+    app.run(
+        host="0.0.0.0",
+        port=port,
+        debug=False,
+        use_reloader=False,
+    )
 
 
 # ============================================================
 # DATABASE
 # ============================================================
 
-db_lock = threading.Lock()
+DB_LOCK = asyncio.Lock()
 
 
 def db():
-    con = sqlite3.connect(
+    conn = sqlite3.connect(
         DB_FILE,
-        check_same_thread=False
+        timeout=30,
+        check_same_thread=False,
     )
-    con.row_factory = sqlite3.Row
-    return con
+    conn.row_factory = sqlite3.Row
+
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+
+    return conn
 
 
 def init_db():
-    con = db()
-    cur = con.cursor()
+    conn = db()
+    cur = conn.cursor()
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS users(
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        first_name TEXT,
-        credits INTEGER DEFAULT 10,
-        premium INTEGER DEFAULT 0,
-        premium_until TEXT,
-        joined_at TEXT,
-        last_bonus TEXT,
-        referral_code TEXT UNIQUE,
-        referred_by INTEGER,
-        referral_count INTEGER DEFAULT 0,
-        referral_earned INTEGER DEFAULT 0,
-        language TEXT DEFAULT 'en',
-        banned INTEGER DEFAULT 0,
-        xp INTEGER DEFAULT 0,
-        level INTEGER DEFAULT 1,
-        streak INTEGER DEFAULT 0,
-        last_streak TEXT,
-        notifications INTEGER DEFAULT 1
+    cur.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT DEFAULT '',
+            first_name TEXT DEFAULT '',
+            language TEXT DEFAULT 'bn',
+            credits INTEGER DEFAULT 10,
+            xp INTEGER DEFAULT 0,
+            streak INTEGER DEFAULT 0,
+            last_daily TEXT DEFAULT '',
+            last_seen TEXT DEFAULT '',
+            referred_by INTEGER DEFAULT 0,
+            referral_count INTEGER DEFAULT 0,
+            premium INTEGER DEFAULT 0,
+            premium_until TEXT DEFAULT '',
+            banned INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT '',
+            updated_at TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            tool TEXT,
+            status TEXT,
+            created_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS credit_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            amount INTEGER,
+            reason TEXT,
+            created_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS redeem_codes (
+            code TEXT PRIMARY KEY,
+            credits INTEGER DEFAULT 0,
+            max_uses INTEGER DEFAULT 1,
+            used_count INTEGER DEFAULT 0,
+            active INTEGER DEFAULT 1,
+            created_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS redemptions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT,
+            user_id INTEGER,
+            created_at TEXT,
+            UNIQUE(code, user_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS premium_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            plan TEXT,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT,
+            updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS support_tickets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            message TEXT,
+            status TEXT DEFAULT 'open',
+            created_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS broadcast_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            admin_id INTEGER,
+            target TEXT,
+            message TEXT,
+            status TEXT DEFAULT 'running',
+            total INTEGER DEFAULT 0,
+            sent INTEGER DEFAULT 0,
+            failed INTEGER DEFAULT 0,
+            created_at TEXT,
+            updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS broadcast_failures (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER,
+            user_id INTEGER,
+            error TEXT DEFAULT '',
+            created_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS user_settings (
+            user_id INTEGER PRIMARY KEY,
+            notifications INTEGER DEFAULT 1,
+            compact INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS admin_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT DEFAULT ''
+        );
+        """
     )
-    """)
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS redeem_codes(
-        code TEXT PRIMARY KEY,
-        credits INTEGER DEFAULT 0,
-        max_uses INTEGER DEFAULT 1,
-        used_count INTEGER DEFAULT 0,
-        enabled INTEGER DEFAULT 1,
-        created_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS redemptions(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        code TEXT,
-        credits INTEGER,
-        created_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS history(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        tool TEXT,
-        status TEXT,
-        filename TEXT,
-        credits INTEGER,
-        created_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS credit_history(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        amount INTEGER,
-        reason TEXT,
-        created_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS premium_requests(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        plan TEXT,
-        transaction_id TEXT,
-        status TEXT DEFAULT 'pending',
-        created_at TEXT,
-        reviewed_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS support_tickets(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        message TEXT,
-        status TEXT DEFAULT 'open',
-        created_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS user_settings(
-        user_id INTEGER PRIMARY KEY,
-        language TEXT DEFAULT 'en',
-        notifications INTEGER DEFAULT 1
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS broadcast_jobs(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        admin_id INTEGER,
-        mode TEXT,
-        message TEXT,
-        total INTEGER DEFAULT 0,
-        sent INTEGER DEFAULT 0,
-        failed INTEGER DEFAULT 0,
-        status TEXT DEFAULT 'running',
-        created_at TEXT,
-        finished_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS jobs(
-        job_id TEXT PRIMARY KEY,
-        user_id INTEGER,
-        tool TEXT,
-        filename TEXT,
-        status TEXT DEFAULT 'processing',
-        created_at TEXT,
-        finished_at TEXT
-    )
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS admin_settings(
-        key TEXT PRIMARY KEY,
-        value TEXT
-    )
-    """)
-
-    con.commit()
-    con.close()
-
-
-init_db()
+    conn.commit()
+    conn.close()
 
 
 # ============================================================
-# LANGUAGE SYSTEM
+# COMMON
 # ============================================================
 
-LANGUAGES = {
-    "bn": "🇧🇩 বাংলা",
-    "en": "🇺🇸 English",
-    "hi": "🇮🇳 हिन्दी",
-    "ur": "🇵🇰 اردو",
-    "ar": "🇸🇦 العربية",
-    "es": "🇪🇸 Español",
-    "fr": "🇫🇷 Français",
-    "de": "🇩🇪 Deutsch",
-    "it": "🇮🇹 Italiano",
-    "pt": "🇵🇹 Português",
-    "ru": "🇷🇺 Русский",
-    "zh": "🇨🇳 中文",
-    "ja": "🇯🇵 日本語",
-    "ko": "🇰🇷 한국어",
-    "tr": "🇹🇷 Türkçe",
-    "id": "🇮🇩 Bahasa Indonesia",
-    "ms": "🇲🇾 Bahasa Melayu",
-    "th": "🇹🇭 ไทย",
-    "vi": "🇻🇳 Tiếng Việt",
-    "ta": "🇮🇳 தமிழ்",
-    "te": "🇮🇳 తెలుగు",
-    "mr": "🇮🇳 मराठी",
-    "gu": "🇮🇳 ગુજરાતી",
-    "kn": "🇮🇳 ಕನ್ನಡ",
-    "pa": "🇮🇳 ਪੰਜਾਬੀ",
-    "ne": "🇳🇵 नेपाली",
-    "fa": "🇮🇷 فارسی",
-    "sw": "🌍 Kiswahili",
-    "nl": "🇳🇱 Nederlands",
-}
+def now():
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
-T = {
-    "en": {
-        "pdf": "📕 PDF Tools",
-        "image": "🖼️ Image Tools",
-        "premium": "💎 Premium",
-        "account": "👤 My Account",
-        "bonus": "🎁 Daily Bonus",
-        "refer": "👥 Refer & Earn",
-        "redeem": "🎟️ Redeem Code",
-        "history": "📜 History",
-        "support": "🆘 Support",
-        "settings": "⚙️ Settings",
-        "back": "🔙 Back",
-        "language": "🌐 Language",
-        "help": "❓ Help",
-        "about": "ℹ️ About",
-        "home": "🏠 Main Menu",
-        "welcome": """╔══════════════════════════════╗
-        🚀 RAFIM PDF PRO
-   ⚡ YOUR FILE. OUR POWER.
-╚══════════════════════════════╝
-
-👋 Welcome, {name}!
-
-Your file is about to enter our
-⚡ PRO PROCESSING ENGINE!
-
-━━━━━━━━━━━━━━━━━━━━
-💳 Credits      : {credits}
-💎 Premium      : {premium}
-⭐ Level        : {level}
-🔥 Streak       : {streak}
-👥 Referrals    : {referrals}
-━━━━━━━━━━━━━━━━━━━━
-
-🔥 LET'S PROCESS SOMETHING AWESOME!""",
-        "processing": "⚡ PROCESSING ENGINE",
-        "complete": "🎉 PROCESSING COMPLETE!",
-        "failed": "🚨 PROCESSING INTERRUPTED",
-        "cancelled": "⏹️ PROCESSING CANCELLED",
-        "no_credit": "💳 You don't have enough credits.",
-        "banned": "🚫 Your account is currently restricted.",
-        "saved": "✅ Settings saved successfully!",
-    },
-
-    "bn": {
-        "pdf": "📕 PDF Tools",
-        "image": "🖼️ Image Tools",
-        "premium": "💎 Premium",
-        "account": "👤 আমার অ্যাকাউন্ট",
-        "bonus": "🎁 দৈনিক বোনাস",
-        "refer": "👥 রেফার & আর্ন",
-        "redeem": "🎟️ রিডিম কোড",
-        "history": "📜 হিস্টোরি",
-        "support": "🆘 সাপোর্ট",
-        "settings": "⚙️ সেটিংস",
-        "back": "🔙 ফিরে যান",
-        "language": "🌐 ভাষা",
-        "help": "❓ সাহায্য",
-        "about": "ℹ️ আমাদের সম্পর্কে",
-        "home": "🏠 মেইন মেনু",
-        "welcome": """╔══════════════════════════════╗
-        🚀 RAFIM PDF PRO
-   ⚡ আপনার ফাইল • আমাদের পাওয়ার
-╚══════════════════════════════╝
-
-👋 স্বাগতম, {name}!
-
-আপনার ফাইল এখন ঢুকছে
-⚡ PRO PROCESSING ENGINE-এর ভিতরে!
-
-━━━━━━━━━━━━━━━━━━━━
-💳 ক্রেডিট       : {credits}
-💎 প্রিমিয়াম     : {premium}
-⭐ লেভেল         : {level}
-🔥 স্ট্রিক        : {streak}
-👥 রেফারেল       : {referrals}
-━━━━━━━━━━━━━━━━━━━━
-
-🔥 চলুন, ফাইলকে POWER-UP করি!""",
-        "processing": "⚡ PROCESSING ENGINE",
-        "complete": "🎉 PROCESSING COMPLETE!",
-        "failed": "🚨 PROCESSING INTERRUPTED",
-        "cancelled": "⏹️ PROCESSING CANCELLED",
-        "no_credit": "💳 আপনার পর্যাপ্ত ক্রেডিট নেই।",
-        "banned": "🚫 আপনার অ্যাকাউন্ট বর্তমানে সীমাবদ্ধ।",
-        "saved": "✅ সেটিংস সফলভাবে সংরক্ষণ হয়েছে!",
-    },
-
-    "hi": {
-        "pdf": "📕 PDF Tools",
-        "image": "🖼️ Image Tools",
-        "premium": "💎 Premium",
-        "account": "👤 मेरा अकाउंट",
-        "bonus": "🎁 Daily Bonus",
-        "refer": "👥 Refer & Earn",
-        "redeem": "🎟️ Redeem Code",
-        "history": "📜 History",
-        "support": "🆘 Support",
-        "settings": "⚙️ Settings",
-        "back": "🔙 वापस",
-        "language": "🌐 भाषा",
-        "help": "❓ मदद",
-        "about": "ℹ️ जानकारी",
-        "home": "🏠 मुख्य मेनू",
-        "welcome": """╔══════════════════════════════╗
-        🚀 RAFIM PDF PRO
-      ⚡ आपकी फाइल • हमारी Power
-╚══════════════════════════════╝
-
-👋 स्वागत है, {name}!
-
-━━━━━━━━━━━━━━━━━━━━
-💳 Credits : {credits}
-💎 Premium : {premium}
-⭐ Level   : {level}
-🔥 Streak  : {streak}
-👥 Referrals: {referrals}
-━━━━━━━━━━━━━━━━━━━━
-
-🔥 LET'S PROCESS SOMETHING AWESOME!""",
-        "processing": "⚡ PROCESSING ENGINE",
-        "complete": "🎉 PROCESSING COMPLETE!",
-        "failed": "🚨 PROCESSING INTERRUPTED",
-        "cancelled": "⏹️ PROCESSING CANCELLED",
-        "no_credit": "💳 आपके पास पर्याप्त Credits नहीं हैं।",
-        "banned": "🚫 आपका अकाउंट प्रतिबंधित है।",
-        "saved": "✅ सेटिंग्स सेव हो गईं!",
-    }
-}
+def today():
+    return date.today().isoformat()
 
 
-def tr(user_id, key, **kwargs):
-    u = get_user(user_id)
-    lang = u["language"] if u else "en"
-
-    data = T.get(lang, T["en"])
-    value = data.get(
-        key,
-        T["en"].get(key, key)
-    )
-
-    try:
-        return value.format(**kwargs)
-    except Exception:
-        return value
+def fmt_num(n):
+    return f"{int(n):,}"
 
 
-def get_lang(user_id):
-    u = get_user(user_id)
-    return u["language"] if u else "en"
-
-
-def set_language(user_id, lang):
-    if lang not in LANGUAGES:
-        lang = "en"
-
-    con = db()
-
-    con.execute(
-        "UPDATE users SET language=? WHERE user_id=?",
-        (lang, user_id)
-    )
-
-    con.execute(
-        "INSERT OR REPLACE INTO user_settings("
-        "user_id,language,notifications"
-        ") VALUES(?,?,COALESCE("
-        "(SELECT notifications FROM user_settings WHERE user_id=?),1))",
-        (user_id, lang, user_id)
-    )
-
-    con.commit()
-    con.close()
-
-
-# ============================================================
-# USER SYSTEM
-# ============================================================
-
-def referral_code_for(user_id):
-    return f"R{user_id}"
+def is_admin(user_id):
+    return int(user_id) == ADMIN_ID
 
 
 def get_user(user_id):
-    con = db()
-
-    row = con.execute(
+    conn = db()
+    row = conn.execute(
         "SELECT * FROM users WHERE user_id=?",
-        (user_id,)
+        (user_id,),
     ).fetchone()
-
-    con.close()
-
+    conn.close()
     return row
 
 
-def ensure_user(tg_user, referred_by=None):
+def ensure_user(tg_user, referral_id=0):
     uid = tg_user.id
-    now = datetime.now().isoformat()
-
     existing = get_user(uid)
 
-    if existing:
-        con = db()
+    conn = db()
 
-        con.execute(
-            "UPDATE users SET username=?, first_name=? "
-            "WHERE user_id=?",
+    if not existing:
+        referred_by = 0
+
+        if referral_id and referral_id != uid:
+            ref_user = conn.execute(
+                "SELECT user_id FROM users WHERE user_id=?",
+                (referral_id,),
+            ).fetchone()
+
+            if ref_user:
+                referred_by = referral_id
+
+        conn.execute(
+            """
+            INSERT INTO users
+            (user_id, username, first_name, language, credits,
+             xp, streak, last_daily, last_seen, referred_by,
+             referral_count, premium, premium_until, banned,
+             created_at, updated_at)
+            VALUES (?, ?, ?, 'bn', ?, 0, 0, '', ?, ?, 0, 0, '', 0, ?, ?)
+            """,
+            (
+                uid,
+                tg_user.username or "",
+                tg_user.first_name or "",
+                FREE_CREDITS,
+                now(),
+                referred_by,
+                now(),
+                now(),
+            ),
+        )
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO user_settings(user_id)
+            VALUES (?)
+            """,
+            (uid,),
+        )
+
+        if referred_by:
+            conn.execute(
+                """
+                UPDATE users
+                SET referral_count=referral_count+1
+                WHERE user_id=?
+                """,
+                (referred_by,),
+            )
+
+            conn.execute(
+                """
+                UPDATE users
+                SET credits=credits+?, xp=xp+?
+                WHERE user_id=?
+                """,
+                (
+                    REFERRAL_REWARD,
+                    REFERRAL_XP,
+                    referred_by,
+                ),
+            )
+
+            conn.execute(
+                """
+                INSERT INTO credit_history
+                (user_id, amount, reason, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    referred_by,
+                    REFERRAL_REWARD,
+                    "Referral Bonus",
+                    now(),
+                ),
+            )
+
+    else:
+        conn.execute(
+            """
+            UPDATE users
+            SET username=?, first_name=?, last_seen=?, updated_at=?
+            WHERE user_id=?
+            """,
             (
                 tg_user.username or "",
                 tg_user.first_name or "",
-                uid
-            )
+                now(),
+                now(),
+                uid,
+            ),
         )
 
-        con.commit()
-        con.close()
+    conn.commit()
+    conn.close()
 
-        return existing, False
 
-    code = referral_code_for(uid)
+def add_credits(user_id, amount, reason="Admin"):
+    conn = db()
 
-    con = db()
+    conn.execute(
+        "UPDATE users SET credits=credits+? WHERE user_id=?",
+        (amount, user_id),
+    )
 
-    con.execute("""
-        INSERT INTO users(
-            user_id,username,first_name,credits,joined_at,
-            referral_code,referred_by
-        )
-        VALUES(?,?,?,?,?,?,?)
-    """, (
-        uid,
-        tg_user.username or "",
-        tg_user.first_name or "",
-        FREE_CREDITS,
-        now,
-        code,
-        referred_by
-    ))
+    conn.execute(
+        """
+        INSERT INTO credit_history
+        (user_id, amount, reason, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (user_id, amount, reason, now()),
+    )
 
-    con.execute("""
-        INSERT OR REPLACE INTO user_settings(
-            user_id,language,notifications
-        )
-        VALUES(?,?,?)
-    """, (
-        uid,
-        "en",
-        1
-    ))
+    conn.commit()
+    conn.close()
 
-    con.commit()
-    con.close()
 
-    return get_user(uid), True
+def remove_credits(user_id, amount):
+    conn = db()
+    conn.execute(
+        """
+        UPDATE users
+        SET credits=MAX(0, credits-?)
+        WHERE user_id=?
+        """,
+        (amount, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_credits(user_id):
+    row = get_user(user_id)
+    return int(row["credits"]) if row else 0
+
+
+def add_history(user_id, tool, status="SUCCESS"):
+    conn = db()
+    conn.execute(
+        """
+        INSERT INTO history(user_id, tool, status, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (user_id, tool, status, now()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def add_xp(user_id, amount=XP_SUCCESS):
+    conn = db()
+    conn.execute(
+        "UPDATE users SET xp=xp+? WHERE user_id=?",
+        (amount, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def level_from_xp(xp):
+    return max(1, int(xp // 100) + 1)
+
+
+def is_premium(user_id):
+    row = get_user(user_id)
+
+    if not row:
+        return False
+
+    if not row["premium"]:
+        return False
+
+    until = row["premium_until"]
+
+    if not until:
+        return True
+
+    try:
+        return datetime.fromisoformat(until) > datetime.now()
+    except Exception:
+        return False
+
+
+def set_premium(user_id, days):
+    until = datetime.now() + timedelta(days=days)
+
+    conn = db()
+    conn.execute(
+        """
+        UPDATE users
+        SET premium=1, premium_until=?
+        WHERE user_id=?
+        """,
+        (until.isoformat(sep=" "), user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def ban_user(user_id):
+    conn = db()
+    conn.execute(
+        "UPDATE users SET banned=1 WHERE user_id=?",
+        (user_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def unban_user(user_id):
+    conn = db()
+    conn.execute(
+        "UPDATE users SET banned=0 WHERE user_id=?",
+        (user_id,),
+    )
+    conn.commit()
+    conn.close()
 
 
 def is_banned(user_id):
-    u = get_user(user_id)
-    return bool(u and u["banned"])
+    row = get_user(user_id)
+    return bool(row and row["banned"])
 
 
 # ============================================================
-# PREMIUM STATUS
+# DAILY / STREAK
 # ============================================================
 
-def is_premium(user_id):
-    u = get_user(user_id)
+def process_daily(user_id):
+    conn = db()
 
-    if not u:
-        return False
+    row = conn.execute(
+        "SELECT last_daily, streak FROM users WHERE user_id=?",
+        (user_id,),
+    ).fetchone()
 
-    if not u["premium"]:
-        return False
+    if not row:
+        conn.close()
+        return False, 0, 0
 
-    if u["premium_until"]:
+    last = row["last_daily"]
+    streak = int(row["streak"] or 0)
+
+    if last == today():
+        conn.close()
+        return False, streak, 0
+
+    if last:
         try:
-            expiry = datetime.fromisoformat(
-                u["premium_until"]
-            )
-
-            if datetime.now() > expiry:
-                con = db()
-
-                con.execute(
-                    "UPDATE users SET premium=0 WHERE user_id=?",
-                    (user_id,)
-                )
-
-                con.commit()
-                con.close()
-
-                return False
-
+            d = date.fromisoformat(last)
+            if d == date.today() - timedelta(days=1):
+                streak += 1
+            else:
+                streak = 1
         except Exception:
-            pass
+            streak = 1
+    else:
+        streak = 1
 
-    return True
-
-
-def premium_expiry_text(user_id):
-    u = get_user(user_id)
-
-    if not u or not u["premium"]:
-        return "❌ Not Active"
-
-    if not u["premium_until"]:
-        return "♾️ Active"
-
-    try:
-        expiry = datetime.fromisoformat(
-            u["premium_until"]
-        )
-
-        if datetime.now() >= expiry:
-            return "❌ Expired"
-
-        return expiry.strftime(
-            "%Y-%m-%d %H:%M"
-        )
-
-    except Exception:
-        return "N/A"
-
-
-async def premium_expiry_watcher(application):
-    """
-    Background Premium expiry checker.
-    Expired Premium users are automatically disabled.
-    """
-
-    while True:
-        try:
-            now = datetime.now().isoformat()
-
-            con = db()
-
-            rows = con.execute("""
-                SELECT user_id,premium_until
-                FROM users
-                WHERE premium=1
-                AND premium_until IS NOT NULL
-                AND premium_until <= ?
-            """, (now,)).fetchall()
-
-            if rows:
-                con.execute("""
-                    UPDATE users
-                    SET premium=0
-                    WHERE premium=1
-                    AND premium_until IS NOT NULL
-                    AND premium_until <= ?
-                """, (now,))
-
-                con.commit()
-
-            con.close()
-
-            for row in rows:
-                try:
-                    await application.bot.send_message(
-                        row["user_id"],
-                        """⏰ <b>PREMIUM EXPIRED</b>
-
-💎 আপনার Premium membership-এর মেয়াদ শেষ হয়েছে।
-
-👤 আপনার account এখন Free plan-এ ফিরে গেছে।
-
-🚀 আবার Premium নিতে নিচের Premium button ব্যবহার করুন।""",
-                        parse_mode=ParseMode.HTML,
-                        reply_markup=InlineKeyboardMarkup([
-                            [
-                                InlineKeyboardButton(
-                                    "💎 Get Premium",
-                                    callback_data="premium:menu"
-                                )
-                            ]
-                        ])
-                    )
-                except Exception:
-                    pass
-
-        except Exception:
-            pass
-
-        await asyncio.sleep(60)
-
-
-# ============================================================
-# CREDIT / XP / STREAK
-# ============================================================
-
-def add_credits(user_id, amount, reason=""):
-    con = db()
-
-    con.execute(
-        "UPDATE users SET credits=credits+? WHERE user_id=?",
-        (amount, user_id)
-    )
-
-    con.execute("""
-        INSERT INTO credit_history(
-            user_id,amount,reason,created_at
-        )
-        VALUES(?,?,?,?)
-    """, (
-        user_id,
-        amount,
-        reason,
-        datetime.now().isoformat()
-    ))
-
-    con.commit()
-    con.close()
-
-
-def remove_credits(user_id, amount, reason=""):
-    u = get_user(user_id)
-
-    if not u or u["credits"] < amount:
-        return False
-
-    add_credits(
-        user_id,
-        -amount,
-        reason
-    )
-
-    return True
-
-
-def add_xp(user_id, amount):
-    con = db()
-
-    u = get_user(user_id)
-
-    if not u:
-        con.close()
-        return
-
-    xp = u["xp"] + amount
-    level = max(
-        1,
-        (xp // 100) + 1
-    )
-
-    con.execute(
-        "UPDATE users SET xp=?,level=? WHERE user_id=?",
-        (
-            xp,
-            level,
-            user_id
-        )
-    )
-
-    con.commit()
-    con.close()
-
-
-def update_streak(user_id):
-    u = get_user(user_id)
-
-    if not u:
-        return
-
-    today = date.today().isoformat()
-
-    if u["last_streak"] == today:
-        return
-
-    streak = 1
-
-    if u["last_streak"]:
-        try:
-            old = date.fromisoformat(
-                u["last_streak"]
-            )
-
-            if old == date.today() - timedelta(days=1):
-                streak = u["streak"] + 1
-
-        except Exception:
-            pass
-
-    con = db()
-
-    con.execute("""
+    conn.execute(
+        """
         UPDATE users
-        SET streak=?,last_streak=?
+        SET credits=credits+?,
+            streak=?,
+            last_daily=?
         WHERE user_id=?
-    """, (
-        streak,
-        today,
-        user_id
-    ))
-
-    con.commit()
-    con.close()
-
-    if streak in [3, 7, 14, 30]:
-        add_credits(
+        """,
+        (
+            DAILY_BONUS,
+            streak,
+            today(),
             user_id,
-            min(streak, 10),
-            f"Streak bonus {streak}"
-        )
+        ),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO credit_history
+        (user_id, amount, reason, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            user_id,
+            DAILY_BONUS,
+            "Daily Bonus",
+            now(),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+    return True, streak, DAILY_BONUS
 
 
 # ============================================================
-# HISTORY / JOBS
+# TEXT
 # ============================================================
 
-def log_history(
-    user_id,
-    tool,
-    status,
-    filename="",
-    credits=0
-):
-    con = db()
-
-    con.execute("""
-        INSERT INTO history(
-            user_id,tool,status,filename,credits,created_at
-        )
-        VALUES(?,?,?,?,?,?)
-    """, (
-        user_id,
-        tool,
-        status,
-        filename,
-        credits,
-        datetime.now().isoformat()
-    ))
-
-    con.commit()
-    con.close()
-
-
-def create_job(user_id, tool, filename):
-    job = str(uuid.uuid4())[:12]
-
-    con = db()
-
-    con.execute("""
-        INSERT INTO jobs(
-            job_id,user_id,tool,filename,status,created_at
-        )
-        VALUES(?,?,?,?,?,?)
-    """, (
-        job,
-        user_id,
-        tool,
-        filename,
-        "processing",
-        datetime.now().isoformat()
-    ))
-
-    con.commit()
-    con.close()
-
-    return job
+TEXTS = {
+    "bn": {
+        "welcome": "🌟 <b>Rafim Tools Bot</b>\n\nআপনার All-in-One Utility Bot-এ স্বাগতম।",
+        "banned": "🚫 আপনার অ্যাকাউন্টটি বর্তমানে বন্ধ করা হয়েছে।",
+        "main": "🏠 <b>Main Menu</b>\n\nপ্রয়োজনীয় একটি অপশন নির্বাচন করুন।",
+        "success": "✅ <b>SUCCESS</b>",
+        "error": "❌ <b>ERROR</b>",
+        "retry": "🔄 Retry",
+    },
+    "en": {
+        "welcome": "🌟 <b>Rafim Tools Bot</b>\n\nWelcome to your All-in-One Utility Bot.",
+        "banned": "🚫 Your account is currently blocked.",
+        "main": "🏠 <b>Main Menu</b>\n\nChoose an option.",
+        "success": "✅ <b>SUCCESS</b>",
+        "error": "❌ <b>ERROR</b>",
+        "retry": "🔄 Retry",
+    },
+    "hi": {
+        "welcome": "🌟 <b>Rafim Tools Bot</b>\n\nआपके All-in-One Utility Bot में स्वागत है।",
+        "banned": "🚫 आपका अकाउंट अभी ब्लॉक है।",
+        "main": "🏠 <b>Main Menu</b>\n\nएक विकल्प चुनें।",
+        "success": "✅ <b>SUCCESS</b>",
+        "error": "❌ <b>ERROR</b>",
+        "retry": "🔄 Retry",
+    },
+}
 
 
-def finish_job(job_id, status):
-    con = db()
+def lang(user_id):
+    row = get_user(user_id)
+    return row["language"] if row and row["language"] in TEXTS else "bn"
 
-    con.execute("""
-        UPDATE jobs
-        SET status=?,finished_at=?
-        WHERE job_id=?
-    """, (
-        status,
-        datetime.now().isoformat(),
-        job_id
-    ))
 
-    con.commit()
-    con.close()
+def tr(user_id, key):
+    l = lang(user_id)
+    return TEXTS.get(l, TEXTS["bn"]).get(key, key)
 
 
 # ============================================================
 # KEYBOARDS
 # ============================================================
 
-def main_keyboard(user_id):
-    return ReplyKeyboardMarkup([
+def main_keyboard():
+    return ReplyKeyboardMarkup(
         [
-            tr(user_id, "pdf"),
-            tr(user_id, "image")
+            ["📕 PDF Tools", "🖼️ Image Tools"],
+            ["📝 Text Tools", "🧮 Utility Tools"],
+            ["💎 Premium", "👤 Account"],
+            ["🎁 Daily Bonus", "👥 Referral"],
+            ["🎟️ Redeem", "📜 History"],
+            ["🆘 Support", "⚙️ Settings"],
+            ["🏠 Main Menu"],
         ],
-        [
-            tr(user_id, "premium"),
-            tr(user_id, "account")
-        ],
-        [
-            tr(user_id, "bonus"),
-            tr(user_id, "refer")
-        ],
-        [
-            tr(user_id, "redeem"),
-            tr(user_id, "history")
-        ],
-        [
-            tr(user_id, "support"),
-            tr(user_id, "settings")
-        ],
-    ], resize_keyboard=True)
+        resize_keyboard=True,
+        is_persistent=True,
+    )
 
 
-def pdf_keyboard(user_id):
-    return InlineKeyboardMarkup([
+def admin_keyboard():
+    return InlineKeyboardMarkup(
         [
-            InlineKeyboardButton(
-                "📄 PDF → Word",
-                callback_data="tool:PDF → Word"
-            ),
-            InlineKeyboardButton(
-                "📝 PDF → TXT",
-                callback_data="tool:PDF → TXT"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🖼️ PDF → JPG",
-                callback_data="tool:PDF → JPG"
-            ),
-            InlineKeyboardButton(
-                "🖼️ PDF → PNG",
-                callback_data="tool:PDF → PNG"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🗜️ Compress PDF",
-                callback_data="tool:Compress PDF"
-            ),
-            InlineKeyboardButton(
-                "🔗 Merge PDF",
-                callback_data="merge_start"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "✂️ Split PDF",
-                callback_data="tool:Split PDF"
-            ),
-            InlineKeyboardButton(
-                "📑 Extract Pages",
-                callback_data="tool:Extract Pages"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔄 Rotate PDF",
-                callback_data="tool:Rotate PDF"
-            ),
-            InlineKeyboardButton(
-                "📐 Page Size",
-                callback_data="tool:PDF Page Size"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔢 Page Numbers",
-                callback_data="tool:Add Page Numbers"
-            ),
-            InlineKeyboardButton(
-                "💧 Watermark",
-                callback_data="tool:Add Watermark"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔐 Protect PDF",
-                callback_data="tool:Protect PDF"
-            ),
-            InlineKeyboardButton(
-                "🔓 Unlock PDF",
-                callback_data="tool:Unlock PDF"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🧹 Remove Metadata",
-                callback_data="tool:Remove Metadata"
-            ),
-            InlineKeyboardButton(
-                "ℹ️ PDF Info",
-                callback_data="tool:PDF Info"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📦 PDF → XPS",
-                callback_data="tool:PDF → XPS"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🏠 Main Menu",
-                callback_data="home"
-            )
+            [
+                InlineKeyboardButton("👥 Users", callback_data="admin:users"),
+                InlineKeyboardButton("📊 Statistics", callback_data="admin:stats"),
+            ],
+            [
+                InlineKeyboardButton("💎 Premium Requests", callback_data="admin:premium"),
+                InlineKeyboardButton("🎟️ Redeem", callback_data="admin:redeem"),
+            ],
+            [
+                InlineKeyboardButton("📢 Broadcast", callback_data="admin:broadcast"),
+                InlineKeyboardButton("🚫 Ban/Unban", callback_data="admin:ban"),
+            ],
+            [
+                InlineKeyboardButton("🎫 Tickets", callback_data="admin:tickets"),
+                InlineKeyboardButton("⚙️ Settings", callback_data="admin:settings"),
+            ],
+            [
+                InlineKeyboardButton("🏠 Main Menu", callback_data="main"),
+            ],
         ]
-    ])
+    )
 
 
-def image_keyboard(user_id):
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "📄 JPG → PDF",
-                callback_data="tool:JPG → PDF"
-            ),
-            InlineKeyboardButton(
-                "📄 PNG → PDF",
-                callback_data="tool:PNG → PDF"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📚 Multiple Images → PDF",
-                callback_data="tool:Multiple Images → PDF"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🗜️ Compress Image",
-                callback_data="tool:Compress Image"
-            ),
-            InlineKeyboardButton(
-                "📏 Resize Image",
-                callback_data="tool:Resize Image"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "📐 Custom Resize",
-                callback_data="tool:Custom Resize"
-            ),
-            InlineKeyboardButton(
-                "🔄 JPG ↔ PNG",
-                callback_data="tool:JPG ↔ PNG"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🌐 Image → WebP",
-                callback_data="tool:Image → WebP"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🏠 Main Menu",
-                callback_data="home"
-            ),
-        ]
-    ])
+PDF_TOOLS = {
+    "pdf_word": "📄 PDF → Word",
+    "pdf_text": "📝 PDF → Text",
+    "pdf_images": "🖼️ PDF → Images",
+    "pdf_compress": "🗜️ PDF Compress",
+    "pdf_merge": "🔗 PDF Merge",
+    "pdf_split": "✂️ PDF Split",
+    "pdf_extract": "📑 Page Extract",
+    "pdf_rotate": "🔄 Rotate PDF",
+    "pdf_resize": "📐 Page Size",
+    "pdf_numbers": "🔢 Page Numbers",
+    "pdf_watermark": "💧 Watermark",
+    "pdf_metadata": "🧹 Remove Metadata",
+    "pdf_info": "ℹ️ PDF Info",
+    "pdf_protect": "🔐 PDF Password",
+    "pdf_unlock": "🔓 Unlock PDF",
+    "pdf_xps": "📦 PDF → XPS",
+}
 
 
-def settings_keyboard(user_id):
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "🌐 Language",
-                callback_data="settings:language"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🔔 Notifications",
-                callback_data="settings:notifications"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🏠 Main Menu",
-                callback_data="home"
-            )
-        ]
-    ])
+IMAGE_TOOLS = {
+    "img_compress": "🗜️ Compress",
+    "img_resize": "📏 Resize",
+    "img_crop": "✂️ Crop",
+    "img_jpg": "🟨 JPG",
+    "img_png": "🟦 PNG",
+    "img_webp": "🟩 WebP",
+    "img_pdf": "📄 Image → PDF",
+    "img_multi_pdf": "📚 Images → PDF",
+    "img_watermark": "💧 Watermark",
+    "img_enhance": "✨ Enhance",
+    "img_gray": "⚫ Grayscale",
+    "img_rotate": "🔄 Rotate",
+    "img_flip": "↔️ Flip",
+}
 
 
-def language_keyboard():
+TEXT_TOOLS = {
+    "word_count": "🔢 Word/Character Count",
+    "upper": "🔠 UPPERCASE",
+    "lower": "🔡 lowercase",
+    "title": "🔤 Title Case",
+    "clean": "🧹 Text Cleaner",
+    "json": "📋 JSON Formatter",
+    "url_encode": "🔗 URL Encode",
+    "url_decode": "🔓 URL Decode",
+    "base64_encode": "🔐 Base64 Encode",
+    "base64_decode": "🔓 Base64 Decode",
+    "encrypt": "🔒 Text Encrypt",
+    "decrypt": "🔓 Text Decrypt",
+}
+
+
+UTILITY_TOOLS = {
+    "calculator": "🧮 Calculator",
+    "unit": "📏 Unit Converter",
+    "date_calc": "📅 Date Calculator",
+    "random": "🎲 Random Generator",
+    "uuid": "🆔 UUID Generator",
+    "password": "🔑 Password Generator",
+    "qr": "🔳 QR Generator",
+}
+
+
+def grid_buttons(items, prefix="tool", width=2):
+    arr = list(items.items())
     rows = []
-    items = list(LANGUAGES.items())
 
-    for i in range(0, len(items), 2):
+    for i in range(0, len(arr), width):
         row = []
 
-        for code, name in items[i:i + 2]:
+        for code, label in arr[i:i + width]:
             row.append(
                 InlineKeyboardButton(
-                    name,
-                    callback_data=f"lang:{code}"
+                    label,
+                    callback_data=f"{prefix}:{code}",
                 )
             )
 
         rows.append(row)
 
-    return InlineKeyboardMarkup(rows)
-
-
-# ============================================================
-# PREMIUM KEYBOARDS
-# ============================================================
-
-def premium_plan_keyboard():
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                f"💎 Weekly — ৳{WEEKLY_PRICE}",
-                callback_data="premium:weekly"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                f"👑 Monthly — ৳{MONTHLY_PRICE}",
-                callback_data="premium:monthly"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📋 My Premium Status",
-                callback_data="premium:status"
-            )
-        ],
+    rows.append(
         [
             InlineKeyboardButton(
                 "🏠 Main Menu",
-                callback_data="home"
+                callback_data="main",
             )
         ]
-    ])
-
-
-def premium_payment_keyboard(plan):
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "📱 bKash",
-                callback_data=f"payment:bkash:{plan}"
-            ),
-            InlineKeyboardButton(
-                "📱 Nagad",
-                callback_data=f"payment:nagad:{plan}"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "⬅️ Back",
-                callback_data="premium:menu"
-            )
-        ]
-    ])
-
-
-def admin_premium_request_keyboard(request_id):
-    return InlineKeyboardMarkup([
-        [
-            InlineKeyboardButton(
-                "✅ APPROVE",
-                callback_data=f"premium_admin:approve:{request_id}"
-            ),
-            InlineKeyboardButton(
-                "❌ REJECT",
-                callback_data=f"premium_admin:reject:{request_id}"
-            )
-        ]
-    ])
-
-
-# ============================================================
-# PROGRESS SYSTEM
-# ============================================================
-
-PROGRESS_DATA = {
-    10: (
-        "📥",
-        "ফাইল গ্রহণ করা হচ্ছে...",
-        "আপনার ফাইল নিরাপদে নেওয়া হয়েছে।"
-    ),
-    20: (
-        "🔍",
-        "ফাইল বিশ্লেষণ করা হচ্ছে...",
-        "ডকুমেন্টের গঠন পরীক্ষা চলছে।"
-    ),
-    30: (
-        "📑",
-        "পেজ প্রস্তুত করা হচ্ছে...",
-        "প্রয়োজনীয় ডেটা প্রস্তুত করা হচ্ছে।"
-    ),
-    40: (
-        "⚙️",
-        "প্রসেসিং শুরু হয়েছে...",
-        "মূল কাজ এখন চলছে।"
-    ),
-    50: (
-        "📊",
-        "ডকুমেন্ট প্রসেস করা হচ্ছে...",
-        "ডেটা রূপান্তর চলছে।"
-    ),
-    60: (
-        "🛠️",
-        "ফাইল আরও প্রসেস করা হচ্ছে...",
-        "সিস্টেম কাজ চালিয়ে যাচ্ছে।"
-    ),
-    70: (
-        "✨",
-        "ফাইল অপ্টিমাইজ করা হচ্ছে...",
-        "আউটপুট আরও সুন্দর করা হচ্ছে।"
-    ),
-    80: (
-        "📦",
-        "আউটপুট তৈরি করা হচ্ছে...",
-        "ফাইনাল ফাইল প্রস্তুত হচ্ছে।"
-    ),
-    90: (
-        "🚀",
-        "ফাইনাল প্রস্তুতি চলছে...",
-        "আর মাত্র শেষ ধাপ।"
-    ),
-    100: (
-        "✅",
-        "প্রসেসিং সম্পন্ন!",
-        "আপনার ফাইল সফলভাবে প্রস্তুত।"
-    ),
-}
-
-
-def progress_bar(percent):
-    filled = percent // 10
-
-    return (
-        "█" * filled
-        + "░" * (10 - filled)
     )
 
-
-def progress_text(percent, filename=""):
-    icon, title, desc = PROGRESS_DATA.get(
-        percent,
-        (
-            "⚙️",
-            "Processing...",
-            "Please wait..."
-        )
-    )
-
-    return f"""
-╔══════════════════════════════╗
-       {icon} RAFIM PDF PRO
-╚══════════════════════════════╝
-
-{icon} <b>{title}</b>
-
-<code>{progress_bar(percent)}</code> <b>{percent}%</b>
-
-📄 <b>File:</b> {filename[:45]}
-
-━━━━━━━━━━━━━━━━━━━━
-{desc}
-━━━━━━━━━━━━━━━━━━━━
-
-⚡ <i>Smart Processing Engine Active</i>
-"""
+    return InlineKeyboardMarkup(rows)
 
 
-async def progress_message(
-    message,
-    filename,
-    stop_event=None
-):
-    for p in range(10, 101, 10):
-
-        if stop_event and stop_event.is_set():
-            break
-
-        try:
-            await message.edit_text(
-                progress_text(
-                    p,
-                    filename
+def back_keyboard(target="main"):
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "⬅️ Back",
+                    callback_data=target,
                 ),
-                parse_mode=ParseMode.HTML
+                InlineKeyboardButton(
+                    "🏠 Main Menu",
+                    callback_data="main",
+                ),
+            ]
+        ]
+    )
+
+
+# ============================================================
+# CALLBACK SAFE HELPERS
+# ============================================================
+
+async def safe_answer(query, text=None, alert=False):
+    try:
+        await query.answer(text, show_alert=alert)
+    except Exception:
+        pass
+
+
+async def safe_edit(query, text, reply_markup=None):
+    try:
+        await query.edit_message_text(
+            text=text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=reply_markup,
+        )
+    except Exception:
+        try:
+            await query.message.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+                reply_markup=reply_markup,
             )
         except Exception:
             pass
 
-        if p < 100:
-            await asyncio.sleep(0.35)
+
+# ============================================================
+# LOADING SYSTEM
+# ============================================================
+
+PROGRESS_STEPS = [
+    (10, "⏳ Starting..."),
+    (20, "📥 Reading file..."),
+    (30, "🔍 Checking data..."),
+    (40, "⚙️ Preparing..."),
+    (50, "🔄 Processing..."),
+    (60, "🛠️ Applying tool..."),
+    (70, "📦 Building result..."),
+    (80, "✨ Finalizing..."),
+    (90, "🚀 Almost Done..."),
+    (100, "✅ SUCCESS"),
+]
+
+
+async def create_progress(message, title):
+    msg = await message.reply_text(
+        f"⏳ <b>{title}</b>\n\n"
+        f"🟦 10%\n"
+        f"🔄 Starting...",
+        parse_mode=ParseMode.HTML,
+    )
+
+    return msg
+
+
+async def update_progress(progress_msg, title, percent, status):
+    try:
+        await progress_msg.edit_text(
+            f"⚙️ <b>{title}</b>\n\n"
+            f"📊 Progress: <b>{percent}%</b>\n"
+            f"🔄 {status}",
+            parse_mode=ParseMode.HTML,
+        )
+    except TelegramError:
+        pass
+
+
+async def progress_before(progress_msg, title):
+    for percent, status in PROGRESS_STEPS[:5]:
+        await update_progress(
+            progress_msg,
+            title,
+            percent,
+            status,
+        )
+        await asyncio.sleep(0.12)
+
+
+async def progress_after(progress_msg, title):
+    for percent, status in PROGRESS_STEPS[5:]:
+        await update_progress(
+            progress_msg,
+            title,
+            percent,
+            status,
+        )
+        await asyncio.sleep(0.12)
 
 
 # ============================================================
-# TOOL COST
+# FILE HELPERS
 # ============================================================
 
-TOOL_COST = {
-    "PDF → Word": 2,
-    "PDF → TXT": 1,
-    "PDF → JPG": 2,
-    "PDF → PNG": 2,
-    "PDF → Images ZIP": 3,
-    "Compress PDF": 2,
-    "Merge PDF": 3,
-    "Split PDF": 3,
-    "Extract Pages": 2,
-    "PDF → XPS": 3,
-    "Protect PDF": 2,
-    "Unlock PDF": 2,
-    "JPG → PDF": 1,
-    "PNG → PDF": 1,
-    "Multiple Images → PDF": 2,
-    "Rotate PDF": 2,
-    "PDF Page Size": 2,
-    "Add Page Numbers": 2,
-    "Add Watermark": 2,
-    "Remove Metadata": 1,
-    "PDF Info": 1,
-    "Compress Image": 1,
-    "Convert PNG": 1,
-    "Resize Image": 1,
-    "JPG ↔ PNG": 1,
-    "Custom Resize": 1,
-    "Image → WebP": 1,
-}
+def mb(size):
+    return size / (1024 * 1024)
+
+
+def check_file_size(file_size, premium):
+    limit = PREMIUM_FILE_LIMIT_MB if premium else FREE_FILE_LIMIT_MB
+    return mb(file_size) <= limit, limit
+
+
+async def download_document(update, context):
+    document = update.message.document
+
+    if not document:
+        return None
+
+    file = await context.bot.get_file(document.file_id)
+
+    data = await file.download_as_bytearray()
+
+    return bytes(data)
+
+
+async def download_photo(update, context):
+    photo = update.message.photo[-1]
+
+    file = await context.bot.get_file(photo.file_id)
+
+    data = await file.download_as_bytearray()
+
+    return bytes(data)
 
 
 # ============================================================
-# PDF PROCESSOR
+# PDF FUNCTIONS
 # ============================================================
 
 def pdf_to_word(data):
-    pdf = fitz.open(
-        stream=data,
-        filetype="pdf"
-    )
+    src = fitz.open(stream=data, filetype="pdf")
 
     doc = Document()
 
-    for page in pdf:
+    for page in src:
         text = page.get_text("text")
 
         if text.strip():
-            doc.add_paragraph(text)
+            for paragraph in text.split("\n"):
+                if paragraph.strip():
+                    doc.add_paragraph(paragraph)
 
     out = io.BytesIO()
-
     doc.save(out)
 
-    out.seek(0)
+    src.close()
 
-    return (
-        out.getvalue(),
-        "document.docx"
-    )
+    return out.getvalue()
 
 
-def pdf_to_txt(data):
-    pdf = fitz.open(
-        stream=data,
-        filetype="pdf"
-    )
+def pdf_to_text(data):
+    src = fitz.open(stream=data, filetype="pdf")
 
     text = []
 
-    for i, page in enumerate(pdf, 1):
-        text.append(
-            f"\n--- PAGE {i} ---\n"
-        )
+    for i, page in enumerate(src, 1):
+        text.append(f"===== PAGE {i} =====\n")
+        text.append(page.get_text("text"))
 
-        text.append(
-            page.get_text("text")
-        )
+    src.close()
 
-    return (
-        "\n".join(text).encode("utf-8"),
-        "document.txt"
-    )
+    return "\n".join(text).encode("utf-8")
 
 
-def pdf_to_images_zip(data, fmt="jpg"):
-    pdf = fitz.open(
-        stream=data,
-        filetype="pdf"
-    )
+def pdf_to_images_zip(data, image_format="png"):
+    src = fitz.open(stream=data, filetype="pdf")
 
-    zip_buffer = io.BytesIO()
+    output = io.BytesIO()
+
+    import zipfile
 
     with zipfile.ZipFile(
-        zip_buffer,
+        output,
         "w",
-        zipfile.ZIP_DEFLATED
+        zipfile.ZIP_DEFLATED,
     ) as z:
 
-        for i, page in enumerate(pdf, 1):
-
+        for i, page in enumerate(src, 1):
             pix = page.get_pixmap(
-                matrix=fitz.Matrix(
-                    1.6,
-                    1.6
-                ),
-                alpha=False
+                matrix=fitz.Matrix(1.5, 1.5),
+                alpha=False,
             )
 
-            img = Image.frombytes(
-                "RGB",
-                [
-                    pix.width,
-                    pix.height
-                ],
-                pix.samples
-            )
+            ext = image_format.lower()
 
-            b = io.BytesIO()
-
-            if fmt.lower() == "png":
-                img.save(
-                    b,
-                    "PNG"
-                )
-
-                name = f"page_{i}.png"
-
-            else:
-                img.save(
-                    b,
-                    "JPEG",
-                    quality=90,
-                    optimize=True
-                )
-
-                name = f"page_{i}.jpg"
+            name = f"page_{i}.{ext}"
 
             z.writestr(
                 name,
-                b.getvalue()
+                pix.tobytes(ext),
             )
 
-    zip_buffer.seek(0)
+    src.close()
 
-    return (
-        zip_buffer.getvalue(),
-        "pdf_pages.zip"
-    )
+    return output.getvalue()
 
 
-def compress_pdf(data, level="medium"):
-    pdf = fitz.open(
-        stream=data,
-        filetype="pdf"
-    )
+def compress_pdf(data):
+    src = fitz.open(stream=data, filetype="pdf")
 
-    out = io.BytesIO()
+    output = io.BytesIO()
 
-    pdf.save(
-        out,
+    src.save(
+        output,
         garbage=4,
         deflate=True,
-        clean=True
+        deflate_images=True,
+        deflate_fonts=True,
     )
 
-    return (
-        out.getvalue(),
-        "compressed.pdf"
-    )
+    src.close()
+
+    return output.getvalue()
 
 
-def merge_pdfs(datas):
-    out = fitz.open()
+def merge_pdfs(pdf_list):
+    result = fitz.open()
 
-    for data in datas:
+    for data in pdf_list:
         src = fitz.open(
             stream=data,
-            filetype="pdf"
+            filetype="pdf",
         )
 
-        out.insert_pdf(src)
+        result.insert_pdf(src)
+
         src.close()
 
-    b = io.BytesIO()
+    output = io.BytesIO()
+    result.save(output)
+    result.close()
 
-    out.save(b)
-    out.close()
-
-    return (
-        b.getvalue(),
-        "merged.pdf"
-    )
+    return output.getvalue()
 
 
-def split_pdf(data):
-    pdf = fitz.open(
+def split_pdf(data, page_number):
+    src = fitz.open(
         stream=data,
-        filetype="pdf"
+        filetype="pdf",
     )
 
-    zip_buffer = io.BytesIO()
+    if page_number < 1 or page_number > len(src):
+        raise ValueError(
+            f"Page number must be between 1 and {len(src)}"
+        )
 
-    with zipfile.ZipFile(
-        zip_buffer,
-        "w",
-        zipfile.ZIP_DEFLATED
-    ) as z:
+    result = fitz.open()
 
-        for i in range(len(pdf)):
-
-            single = fitz.open()
-
-            single.insert_pdf(
-                pdf,
-                from_page=i,
-                to_page=i
-            )
-
-            b = io.BytesIO()
-
-            single.save(b)
-            single.close()
-
-            z.writestr(
-                f"page_{i + 1}.pdf",
-                b.getvalue()
-            )
-
-    zip_buffer.seek(0)
-
-    return (
-        zip_buffer.getvalue(),
-        "split_pages.zip"
+    result.insert_pdf(
+        src,
+        from_page=page_number - 1,
+        to_page=page_number - 1,
     )
 
+    output = io.BytesIO()
+    result.save(output)
 
-def extract_pages(
-    data,
-    start=1,
-    end=None
-):
-    pdf = fitz.open(
+    result.close()
+    src.close()
+
+    return output.getvalue()
+
+
+def extract_pdf_pages(data, start_page, end_page):
+    src = fitz.open(
         stream=data,
-        filetype="pdf"
+        filetype="pdf",
     )
 
-    if end is None:
-        end = start
+    if (
+        start_page < 1
+        or end_page > len(src)
+        or start_page > end_page
+    ):
+        raise ValueError("Invalid page range.")
 
-    start = max(
-        1,
-        start
+    result = fitz.open()
+
+    result.insert_pdf(
+        src,
+        from_page=start_page - 1,
+        to_page=end_page - 1,
     )
 
-    end = min(
-        len(pdf),
-        end
-    )
+    output = io.BytesIO()
+    result.save(output)
 
-    out = fitz.open()
+    result.close()
+    src.close()
 
-    out.insert_pdf(
-        pdf,
-        from_page=start - 1,
-        to_page=end - 1
-    )
-
-    b = io.BytesIO()
-
-    out.save(b)
-    out.close()
-
-    return (
-        b.getvalue(),
-        f"pages_{start}-{end}.pdf"
-    )
+    return output.getvalue()
 
 
 def rotate_pdf(data, angle=90):
-    pdf = fitz.open(
+    src = fitz.open(
         stream=data,
-        filetype="pdf"
+        filetype="pdf",
     )
 
-    for page in pdf:
+    angle = int(angle) % 360
+
+    for page in src:
         page.set_rotation(
             (page.rotation + angle) % 360
         )
 
-    b = io.BytesIO()
+    output = io.BytesIO()
+    src.save(output)
 
-    pdf.save(b)
-    pdf.close()
+    src.close()
 
-    return (
-        b.getvalue(),
-        "rotated.pdf"
-    )
+    return output.getvalue()
 
 
-def resize_pdf_page(
-    data,
-    size="A4"
-):
+def resize_pdf(data, size_name="A4"):
     sizes = {
-        "A4": (
-            595,
-            842
-        ),
-        "A5": (
-            420,
-            595
-        ),
-        "LETTER": (
-            612,
-            792
-        ),
+        "A4": (595, 842),
+        "A5": (420, 595),
+        "LETTER": (612, 792),
+        "LEGAL": (612, 1008),
     }
 
-    w, h = sizes.get(
-        size.upper(),
-        sizes["A4"]
-    )
+    key = size_name.upper()
+
+    if key not in sizes:
+        key = "A4"
+
+    width, height = sizes[key]
 
     src = fitz.open(
         stream=data,
-        filetype="pdf"
+        filetype="pdf",
     )
 
-    out = fitz.open()
+    result = fitz.open()
 
     for page in src:
-        new = out.new_page(
-            width=w,
-            height=h
+        new_page = result.new_page(
+            width=width,
+            height=height,
         )
 
-        new.show_pdf_page(
-            fitz.Rect(
-                0,
-                0,
-                w,
-                h
-            ),
+        rect = fitz.Rect(
+            0,
+            0,
+            width,
+            height,
+        )
+
+        new_page.show_pdf_page(
+            rect,
             src,
-            page.number
+            page.number,
         )
 
-    b = io.BytesIO()
+    output = io.BytesIO()
+    result.save(output)
 
-    out.save(b)
-    out.close()
+    result.close()
+    src.close()
 
-    return (
-        b.getvalue(),
-        "resized_pages.pdf"
-    )
+    return output.getvalue()
 
 
 def add_page_numbers(data):
-    pdf = fitz.open(
+    src = fitz.open(
         stream=data,
-        filetype="pdf"
+        filetype="pdf",
     )
 
-    for i, page in enumerate(pdf, 1):
-        page.insert_text(
-            fitz.Point(
-                page.rect.width / 2 - 10,
-                page.rect.height - 25
-            ),
-            str(i),
-            fontsize=10
-        )
-
-    b = io.BytesIO()
-
-    pdf.save(b)
-    pdf.close()
-
-    return (
-        b.getvalue(),
-        "numbered.pdf"
-    )
-
-
-def add_watermark(
-    data,
-    text="RAFIM PDF PRO"
-):
-    pdf = fitz.open(
-        stream=data,
-        filetype="pdf"
-    )
-
-    for page in pdf:
+    for i, page in enumerate(src, 1):
         rect = page.rect
 
         page.insert_text(
-            fitz.Point(
-                rect.width / 2 - 80,
-                rect.height / 2
+            (
+                rect.x0 + 20,
+                rect.y1 - 15,
             ),
-            text,
-            fontsize=24,
-            rotate=45,
-            color=(
-                0.5,
-                0.5,
-                0.5
-            ),
-            overlay=True
+            f"Page {i}",
+            fontsize=9,
         )
 
-    b = io.BytesIO()
+    output = io.BytesIO()
+    src.save(output)
 
-    pdf.save(b)
-    pdf.close()
+    src.close()
 
-    return (
-        b.getvalue(),
-        "watermarked.pdf"
-    )
+    return output.getvalue()
 
 
-def remove_metadata(data):
-    pdf = fitz.open(
+def watermark_pdf(data, text):
+    src = fitz.open(
         stream=data,
-        filetype="pdf"
+        filetype="pdf",
     )
 
-    pdf.set_metadata({})
+    for page in src:
+        rect = page.rect
 
-    b = io.BytesIO()
+        page.insert_text(
+            (
+                rect.width / 2 - 100,
+                rect.height / 2,
+            ),
+            text[:100],
+            fontsize=28,
+            rotate=45,
+        )
 
-    pdf.save(b)
-    pdf.close()
+    output = io.BytesIO()
+    src.save(output)
 
-    return (
-        b.getvalue(),
-        "clean_metadata.pdf"
+    src.close()
+
+    return output.getvalue()
+
+
+def remove_pdf_metadata(data):
+    src = fitz.open(
+        stream=data,
+        filetype="pdf",
     )
+
+    metadata = src.metadata or {}
+
+    for key in metadata:
+        metadata[key] = ""
+
+    src.set_metadata(metadata)
+
+    output = io.BytesIO()
+    src.save(output)
+
+    src.close()
+
+    return output.getvalue()
 
 
 def pdf_info(data):
-    pdf = fitz.open(
+    src = fitz.open(
         stream=data,
-        filetype="pdf"
+        filetype="pdf",
     )
 
-    meta = pdf.metadata or {}
+    metadata = src.metadata or {}
 
-    text = f"""
-📊 PDF INFORMATION
+    text = (
+        "📕 <b>PDF Information</b>\n\n"
+        f"📄 Pages: <b>{len(src)}</b>\n"
+        f"📦 Size: <b>{mb(len(data)):.2f} MB</b>\n"
+        f"🔐 Encrypted: <b>{'Yes' if src.is_encrypted else 'No'}</b>\n\n"
+        f"👤 Author: {metadata.get('author', '') or 'N/A'}\n"
+        f"📝 Title: {metadata.get('title', '') or 'N/A'}\n"
+        f"🏢 Creator: {metadata.get('creator', '') or 'N/A'}"
+    )
 
-📄 Pages: {len(pdf)}
-📦 Size: {len(data) / 1024 / 1024:.2f} MB
-
-Title: {meta.get("title") or "N/A"}
-Author: {meta.get("author") or "N/A"}
-Subject: {meta.get("subject") or "N/A"}
-Creator: {meta.get("creator") or "N/A"}
-Producer: {meta.get("producer") or "N/A"}
-"""
+    src.close()
 
     return text
 
 
-def protect_pdf(
-    data,
-    password="123456"
-):
-    pdf = fitz.open(
+def protect_pdf(data, password):
+    src = fitz.open(
         stream=data,
-        filetype="pdf"
+        filetype="pdf",
     )
 
-    b = io.BytesIO()
+    output = io.BytesIO()
 
-    pdf.save(
-        b,
-        encryption=fitz.PDF_ENCRYPT_AES_256,
+    encryption = getattr(
+        fitz,
+        "PDF_ENCRYPT_AES_256",
+        getattr(
+            fitz,
+            "PDF_ENCRYPT_AES_128",
+            4,
+        ),
+    )
+
+    src.save(
+        output,
+        encryption=encryption,
         owner_pw=password,
-        user_pw=password
+        user_pw=password,
     )
 
-    pdf.close()
+    src.close()
 
-    return (
-        b.getvalue(),
-        "protected.pdf"
-    )
+    return output.getvalue()
 
 
-def unlock_pdf(
-    data,
-    password
-):
-    pdf = fitz.open(
+def unlock_pdf(data, password):
+    src = fitz.open(
         stream=data,
-        filetype="pdf"
+        filetype="pdf",
+        password=password,
     )
 
-    if pdf.needs_pass:
+    if src.needs_pass and not src.authenticate(password):
+        src.close()
+        raise ValueError("Incorrect PDF password.")
 
-        if not pdf.authenticate(password):
-            raise ValueError(
-                "Incorrect PDF password"
-            )
+    output = io.BytesIO()
 
-    out = fitz.open()
-
-    for page in pdf:
-        out.insert_pdf(
-            pdf,
-            from_page=page.number,
-            to_page=page.number
-        )
-
-    b = io.BytesIO()
-
-    out.save(b)
-
-    out.close()
-    pdf.close()
-
-    return (
-        b.getvalue(),
-        "unlocked.pdf"
+    src.save(
+        output,
+        encryption=fitz.PDF_ENCRYPT_NONE,
     )
 
+    src.close()
 
-def image_to_pdf(data):
-    img = Image.open(
-        io.BytesIO(data)
-    ).convert("RGB")
-
-    b = io.BytesIO()
-
-    img.save(
-        b,
-        "PDF",
-        resolution=150
-    )
-
-    return (
-        b.getvalue(),
-        "image.pdf"
-    )
-
-
-def multiple_images_to_pdf(datas):
-    images = []
-
-    for data in datas:
-        img = Image.open(
-            io.BytesIO(data)
-        ).convert("RGB")
-
-        images.append(img)
-
-    if not images:
-        raise ValueError(
-            "No images"
-        )
-
-    b = io.BytesIO()
-
-    images[0].save(
-        b,
-        "PDF",
-        save_all=True,
-        append_images=images[1:]
-    )
-
-    return (
-        b.getvalue(),
-        "images.pdf"
-    )
+    return output.getvalue()
 
 
 def pdf_to_xps(data):
-    source = os.path.join(
-        TEMP_DIR,
-        f"{uuid.uuid4()}.pdf"
+    gs = (
+        shutil.which("gs")
+        or shutil.which("gswin64c")
+        or shutil.which("gswin32c")
     )
 
-    output = os.path.join(
-        TEMP_DIR,
-        f"{uuid.uuid4()}.xps"
-    )
-
-    with open(source, "wb") as f:
-        f.write(data)
-
-    try:
-        subprocess.run(
-            [
-                "gs",
-                "-sDEVICE=xps2",
-                "-o",
-                output,
-                source
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=120
+    if not gs:
+        raise RuntimeError(
+            "Ghostscript is not installed on this server. "
+            "PDF → XPS is currently unavailable."
         )
 
-        if not os.path.exists(output):
+    with tempfile.TemporaryDirectory(
+        dir=TEMP_DIR
+    ) as td:
+
+        pdf_path = os.path.join(td, "input.pdf")
+        xps_path = os.path.join(td, "output.xps")
+
+        with open(pdf_path, "wb") as f:
+            f.write(data)
+
+        command = [
+            gs,
+            "-dBATCH",
+            "-dNOPAUSE",
+            "-sDEVICE=xps",
+            f"-sOutputFile={xps_path}",
+            pdf_path,
+        ]
+
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        if result.returncode != 0:
             raise RuntimeError(
-                "Ghostscript unavailable"
+                "XPS conversion failed."
             )
 
-        with open(
+        if not os.path.exists(xps_path):
+            raise RuntimeError(
+                "XPS output was not created."
+            )
+
+        with open(xps_path, "rb") as f:
+            return f.read()
+
+
+# ============================================================
+# IMAGE FUNCTIONS
+# ============================================================
+
+def open_image(data):
+    image = Image.open(io.BytesIO(data))
+    return ImageOps.exif_transpose(image)
+
+
+def image_output(image, fmt="PNG", quality=90):
+    output = io.BytesIO()
+
+    if image.mode not in ("RGB", "RGBA"):
+        image = image.convert("RGBA")
+
+    if fmt.upper() in ("JPG", "JPEG"):
+        if image.mode != "RGB":
+            background = Image.new(
+                "RGB",
+                image.size,
+                "white",
+            )
+            if "A" in image.getbands():
+                background.paste(
+                    image,
+                    mask=image.getchannel("A"),
+                )
+            else:
+                background.paste(image)
+            image = background
+
+        image.save(
             output,
-            "rb"
-        ) as f:
-            result = f.read()
-
-        return (
-            result,
-            "document.xps"
+            format="JPEG",
+            quality=quality,
+            optimize=True,
         )
 
-    finally:
-        for p in [
-            source,
-            output
-        ]:
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except Exception:
-                pass
+    else:
+        image.save(
+            output,
+            format=fmt.upper(),
+            quality=quality,
+            optimize=True,
+        )
+
+    return output.getvalue()
+
+
+def compress_image(data):
+    image = open_image(data)
+    return image_output(
+        image,
+        "JPEG",
+        70,
+    )
+
+
+def resize_image(data, width, height=None):
+    image = open_image(data)
+
+    width = int(width)
+
+    if height:
+        height = int(height)
+    else:
+        ratio = width / image.width
+        height = int(image.height * ratio)
+
+    image = image.resize(
+        (width, height),
+        Image.Resampling.LANCZOS,
+    )
+
+    return image_output(
+        image,
+        "PNG",
+    )
+
+
+def crop_image(data, x, y, width, height):
+    image = open_image(data)
+
+    x = int(x)
+    y = int(y)
+    width = int(width)
+    height = int(height)
+
+    box = (
+        max(0, x),
+        max(0, y),
+        min(image.width, x + width),
+        min(image.height, y + height),
+    )
+
+    if box[2] <= box[0] or box[3] <= box[1]:
+        raise ValueError("Invalid crop area.")
+
+    image = image.crop(box)
+
+    return image_output(
+        image,
+        "PNG",
+    )
+
+
+def convert_image(data, fmt):
+    image = open_image(data)
+
+    if fmt == "WEBP":
+        return image_output(image, "WEBP", 90)
+
+    if fmt == "JPG":
+        return image_output(image, "JPEG", 90)
+
+    return image_output(image, "PNG", 90)
+
+
+def image_to_pdf(data):
+    image = open_image(data)
+
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+
+    output = io.BytesIO()
+
+    image.save(
+        output,
+        format="PDF",
+        resolution=100,
+    )
+
+    return output.getvalue()
+
+
+def images_to_pdf(datas):
+    images = []
+
+    for data in datas:
+        image = open_image(data)
+
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+
+        images.append(image)
+
+    if not images:
+        raise ValueError("No images found.")
+
+    output = io.BytesIO()
+
+    first = images[0]
+
+    first.save(
+        output,
+        format="PDF",
+        save_all=True,
+        append_images=images[1:],
+        resolution=100,
+    )
+
+    return output.getvalue()
+
+
+def image_watermark(data, text):
+    image = open_image(data).convert("RGBA")
+
+    overlay = Image.new(
+        "RGBA",
+        image.size,
+        (0, 0, 0, 0),
+    )
+
+    draw = ImageDraw.Draw(overlay)
+
+    font = ImageFont.load_default()
+
+    bbox = draw.textbbox(
+        (0, 0),
+        text,
+        font=font,
+    )
+
+    x = max(
+        10,
+        image.width - (bbox[2] - bbox[0]) - 20,
+    )
+
+    y = image.height - 30
+
+    draw.text(
+        (x, y),
+        text[:100],
+        fill=(255, 255, 255, 180),
+        font=font,
+    )
+
+    result = Image.alpha_composite(
+        image,
+        overlay,
+    )
+
+    return image_output(
+        result,
+        "PNG",
+    )
+
+
+def enhance_image(data):
+    image = open_image(data)
+
+    image = ImageEnhance.Contrast(
+        image
+    ).enhance(1.15)
+
+    image = ImageEnhance.Sharpness(
+        image
+    ).enhance(1.25)
+
+    return image_output(
+        image,
+        "PNG",
+    )
+
+
+def grayscale_image(data):
+    image = open_image(data).convert("L")
+
+    return image_output(
+        image,
+        "PNG",
+    )
+
+
+def rotate_image(data, angle=90):
+    image = open_image(data)
+
+    image = image.rotate(
+        -int(angle),
+        expand=True,
+    )
+
+    return image_output(
+        image,
+        "PNG",
+    )
+
+
+def flip_image(data):
+    image = open_image(data)
+
+    image = ImageOps.mirror(image)
+
+    return image_output(
+        image,
+        "PNG",
+    )
 
 
 # ============================================================
-# IMAGE PROCESSOR
+# TEXT / UTILITY
 # ============================================================
 
-def process_image(
-    data,
-    tool
-):
-    img = Image.open(
-        io.BytesIO(data)
+def word_count(text):
+    words = re.findall(
+        r"\S+",
+        text,
+        flags=re.UNICODE,
     )
 
-    if tool == "Compress Image":
-        img.thumbnail(
-            (
-                1920,
-                1920
-            )
-        )
-
-        out = io.BytesIO()
-
-        img.convert("RGB").save(
-            out,
-            "JPEG",
-            quality=70,
-            optimize=True
-        )
-
-        return (
-            out.getvalue(),
-            "compressed.jpg"
-        )
-
-    if tool == "Resize Image":
-        img.thumbnail(
-            (
-                1280,
-                1280
-            )
-        )
-
-        out = io.BytesIO()
-
-        img.convert("RGB").save(
-            out,
-            "JPEG",
-            quality=90
-        )
-
-        return (
-            out.getvalue(),
-            "resized.jpg"
-        )
-
-    if tool == "Custom Resize":
-        img.thumbnail(
-            (
-                1280,
-                1280
-            )
-        )
-
-        out = io.BytesIO()
-
-        img.convert("RGB").save(
-            out,
-            "JPEG",
-            quality=90
-        )
-
-        return (
-            out.getvalue(),
-            "custom_resize.jpg"
-        )
-
-    if tool == "Image → WebP":
-        out = io.BytesIO()
-
-        img.save(
-            out,
-            "WEBP",
-            quality=85
-        )
-
-        return (
-            out.getvalue(),
-            "image.webp"
-        )
-
-    if tool == "JPG ↔ PNG":
-        out = io.BytesIO()
-
-        if img.format == "PNG":
-            img.convert("RGB").save(
-                out,
-                "JPEG",
-                quality=92
-            )
-
-            return (
-                out.getvalue(),
-                "converted.jpg"
-            )
-
-        img.save(
-            out,
-            "PNG"
-        )
-
-        return (
-            out.getvalue(),
-            "converted.png"
-        )
-
-    if tool == "Convert PNG":
-        out = io.BytesIO()
-
-        img.save(
-            out,
-            "PNG"
-        )
-
-        return (
-            out.getvalue(),
-            "converted.png"
-        )
-
-    out = io.BytesIO()
-
-    img.convert("RGB").save(
-        out,
-        "image.jpg",
-        quality=92
+    chars = len(text)
+    chars_no_space = len(
+        re.sub(r"\s+", "", text)
     )
+    lines = len(text.splitlines())
 
     return (
-        out.getvalue(),
-        "image.jpg"
+        "📊 <b>Text Statistics</b>\n\n"
+        f"📝 Words: <b>{len(words):,}</b>\n"
+        f"🔤 Characters: <b>{chars:,}</b>\n"
+        f"🔡 Without Spaces: <b>{chars_no_space:,}</b>\n"
+        f"📄 Lines: <b>{lines:,}</b>"
     )
 
 
+def clean_text(text):
+    text = text.replace(
+        "\r\n",
+        "\n",
+    )
+
+    text = re.sub(
+        r"[ \t]+",
+        " ",
+        text,
+    )
+
+    text = re.sub(
+        r"\n{3,}",
+        "\n\n",
+        text,
+    )
+
+    return text.strip()
+
+
+def json_format(text):
+    obj = json.loads(text)
+
+    return json.dumps(
+        obj,
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def safe_base64_encode(text):
+    return base64.b64encode(
+        text.encode("utf-8")
+    ).decode("ascii")
+
+
+def safe_base64_decode(text):
+    return base64.b64decode(
+        text.encode("ascii")
+    ).decode("utf-8")
+
+
+def make_fernet(password):
+    digest = hashlib.sha256(
+        password.encode("utf-8")
+    ).digest()
+
+    key = base64.urlsafe_b64encode(
+        digest
+    )
+
+    return Fernet(key)
+
+
+def encrypt_text(password, text):
+    f = make_fernet(password)
+
+    return f.encrypt(
+        text.encode("utf-8")
+    ).decode("utf-8")
+
+
+def decrypt_text(password, text):
+    f = make_fernet(password)
+
+    return f.decrypt(
+        text.encode("utf-8")
+    ).decode("utf-8")
+
+
 # ============================================================
-# SEND FILE
+# SAFE CALCULATOR
+# ============================================================
+
+BIN_OPS = {
+    ast.Add: lambda a, b: a + b,
+    ast.Sub: lambda a, b: a - b,
+    ast.Mult: lambda a, b: a * b,
+    ast.Div: lambda a, b: a / b,
+    ast.FloorDiv: lambda a, b: a // b,
+    ast.Mod: lambda a, b: a % b,
+    ast.Pow: lambda a, b: a ** b,
+}
+
+UNARY_OPS = {
+    ast.UAdd: lambda a: +a,
+    ast.USub: lambda a: -a,
+}
+
+
+def calculate_expression(expression):
+    expression = expression.replace(
+        "^",
+        "**",
+    )
+
+    tree = ast.parse(
+        expression,
+        mode="eval",
+    )
+
+    def evaluate(node):
+        if isinstance(node, ast.Expression):
+            return evaluate(node.body)
+
+        if isinstance(node, ast.Constant):
+            if isinstance(
+                node.value,
+                (int, float),
+            ):
+                return node.value
+
+            raise ValueError(
+                "Invalid number."
+            )
+
+        if isinstance(node, ast.BinOp):
+            op = BIN_OPS.get(type(node.op))
+
+            if not op:
+                raise ValueError(
+                    "Operator not allowed."
+                )
+
+            left = evaluate(node.left)
+            right = evaluate(node.right)
+
+            if abs(left) > 10**100:
+                raise ValueError(
+                    "Number too large."
+                )
+
+            if abs(right) > 10**100:
+                raise ValueError(
+                    "Number too large."
+                )
+
+            result = op(left, right)
+
+            if abs(result) > 10**100:
+                raise ValueError(
+                    "Result too large."
+                )
+
+            return result
+
+        if isinstance(node, ast.UnaryOp):
+            op = UNARY_OPS.get(type(node.op))
+
+            if not op:
+                raise ValueError(
+                    "Operator not allowed."
+                )
+
+            return op(evaluate(node.operand))
+
+        raise ValueError(
+            "Invalid expression."
+        )
+
+    return evaluate(tree)
+
+
+def unit_convert(text):
+    m = re.match(
+        r"^\s*([-+]?\d+(?:\.\d+)?)\s*"
+        r"([a-zA-Z]+)\s*(?:to|in|=)\s*"
+        r"([a-zA-Z]+)\s*$",
+        text,
+    )
+
+    if not m:
+        raise ValueError(
+            "Example: 10 km to mile"
+        )
+
+    value = float(m.group(1))
+    src = m.group(2).lower()
+    dst = m.group(3).lower()
+
+    length = {
+        "m": 1,
+        "meter": 1,
+        "meters": 1,
+        "km": 1000,
+        "kilometer": 1000,
+        "mile": 1609.344,
+        "mi": 1609.344,
+        "ft": 0.3048,
+        "feet": 0.3048,
+        "inch": 0.0254,
+        "in": 0.0254,
+        "cm": 0.01,
+        "mm": 0.001,
+    }
+
+    weight = {
+        "g": 1,
+        "gram": 1,
+        "kg": 1000,
+        "kilogram": 1000,
+        "lb": 453.59237,
+        "pound": 453.59237,
+    }
+
+    data_units = {
+        "b": 1,
+        "kb": 1024,
+        "mb": 1024**2,
+        "gb": 1024**3,
+        "tb": 1024**4,
+    }
+
+    if src in length and dst in length:
+        result = value * length[src] / length[dst]
+        return f"{value:g} {src} = {result:g} {dst}"
+
+    if src in weight and dst in weight:
+        result = value * weight[src] / weight[dst]
+        return f"{value:g} {src} = {result:g} {dst}"
+
+    if src in data_units and dst in data_units:
+        result = value * data_units[src] / data_units[dst]
+        return f"{value:g} {src} = {result:g} {dst}"
+
+    if src in ("c", "celsius") and dst in ("f", "fahrenheit"):
+        result = value * 9 / 5 + 32
+        return f"{value:g}°C = {result:g}°F"
+
+    if src in ("f", "fahrenheit") and dst in ("c", "celsius"):
+        result = (value - 32) * 5 / 9
+        return f"{value:g}°F = {result:g}°C"
+
+    raise ValueError(
+        "Unsupported unit conversion."
+    )
+
+
+def date_calculator(text):
+    m = re.match(
+        r"^\s*(\d{4}-\d{2}-\d{2})\s*"
+        r"([+-])\s*(\d+)\s*$",
+        text,
+    )
+
+    if not m:
+        raise ValueError(
+            "Example: 2026-09-22 + 30"
+        )
+
+    d = date.fromisoformat(m.group(1))
+    days = int(m.group(3))
+
+    if m.group(2) == "-":
+        days = -days
+
+    result = d + timedelta(days=days)
+
+    return (
+        f"📅 {d.isoformat()} "
+        f"{m.group(2)} {abs(days)} "
+        f"= <b>{result.isoformat()}</b>"
+    )
+
+
+def random_generator(text):
+    text = text.strip()
+
+    if re.fullmatch(
+        r"\d+\s*-\s*\d+",
+        text,
+    ):
+        a, b = map(
+            int,
+            re.split(
+                r"\s*-\s*",
+                text,
+            ),
+        )
+
+        if a > b:
+            a, b = b, a
+
+        return str(
+            random.randint(a, b)
+        )
+
+    choices = [
+        x.strip()
+        for x in text.split(",")
+        if x.strip()
+    ]
+
+    if not choices:
+        raise ValueError(
+            "Example: Apple, Banana, Mango"
+        )
+
+    return random.choice(choices)
+
+
+def password_generator(length=16):
+    length = max(
+        8,
+        min(int(length), 64),
+    )
+
+    alphabet = (
+        string.ascii_letters
+        + string.digits
+        + "!@#$%^&*_-+="
+    )
+
+    return "".join(
+        secrets.choice(alphabet)
+        for _ in range(length)
+    )
+
+
+def make_qr(text):
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=10,
+        border=4,
+    )
+
+    qr.add_data(text)
+    qr.make(fit=True)
+
+    image = qr.make_image(
+        fill_color="black",
+        back_color="white",
+    )
+
+    output = io.BytesIO()
+
+    image.save(
+        output,
+        format="PNG",
+    )
+
+    return output.getvalue()
+
+
+# ============================================================
+# SEND RESULT
 # ============================================================
 
 async def send_result(
-    update,
+    message,
     data,
-    filename
+    filename,
+    caption="",
 ):
-    bio = io.BytesIO(data)
-    bio.name = filename
-
-    await update.effective_chat.send_document(
-        document=bio,
-        filename=filename
+    await message.reply_document(
+        document=io.BytesIO(data),
+        filename=filename,
+        caption=caption,
     )
 
 
 # ============================================================
-# FILE SIZE / CREDIT CHECK
+# START
 # ============================================================
 
-def max_file_mb(user_id):
-    return (
-        PREMIUM_FILE_LIMIT_MB
-        if is_premium(user_id)
-        else FREE_FILE_LIMIT_MB
-    )
-
-
-def check_file_size(
-    user_id,
-    size
-):
-    return size <= (
-        max_file_mb(user_id)
-        * 1024
-        * 1024
-    )
-
-
-# ============================================================
-# START / WELCOME
-# ============================================================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
-    referred_by = None
+    referral_id = 0
 
     if context.args:
-        arg = context.args[0].strip()
-
-        if arg.startswith("R"):
-            try:
-                possible_id = int(
-                    arg[1:]
-                )
-
-                if possible_id != user.id:
-                    ref = get_user(
-                        possible_id
-                    )
-
-                    if ref:
-                        referred_by = possible_id
-
-            except Exception:
-                pass
-
-    u, created = ensure_user(
-        user,
-        referred_by=referred_by
-    )
-
-    update_streak(
-        user.id
-    )
-
-    if created:
-
-        if referred_by:
-
-            add_credits(
-                referred_by,
-                REFERRAL_REWARD,
-                "Successful referral"
-            )
-
-            add_xp(
-                referred_by,
-                REFERRAL_XP
-            )
-
-            con = db()
-
-            con.execute("""
-                UPDATE users
-                SET referral_count=referral_count+1,
-                    referral_earned=referral_earned+?
-                WHERE user_id=?
-            """, (
-                REFERRAL_REWARD,
-                referred_by
-            ))
-
-            con.commit()
-            con.close()
-
-            try:
-                await context.bot.send_message(
-                    referred_by,
-                    f"""🎯 <b>REFERRAL JOIN!</b>
-
-👤 New User: {user.first_name}
-🆔 ID: <code>{user.id}</code>
-
-🎁 Reward: +{REFERRAL_REWARD} Credits
-⭐ Referral XP: +{REFERRAL_XP}
-
-🔥 Your referral system just got stronger!""",
-                    parse_mode=ParseMode.HTML
-                )
-            except Exception:
-                pass
-
         try:
-            con = db()
+            arg = context.args[0]
 
-            total = con.execute(
-                "SELECT COUNT(*) FROM users"
-            ).fetchone()[0]
-
-            con.close()
-
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"""🚨 <b>NEW USER DETECTED</b> 🚨
-
-👤 <b>{user.first_name}</b>
-🆔 <code>{user.id}</code>
-🔗 @{user.username or "No username"}
-
-📅 {datetime.now().strftime("%Y-%m-%d %H:%M")}
-
-💳 Credits: {FREE_CREDITS}
-💎 Premium: ❌
-⭐ Level: 1
-🔥 Streak: 1
-👥 Referred By: {referred_by or "None"}
-
-📊 Total Users: {total}""",
-                parse_mode=ParseMode.HTML
-            )
-
+            if arg.startswith("ref_"):
+                referral_id = int(
+                    arg.replace("ref_", "")
+                )
+            elif arg.isdigit():
+                referral_id = int(arg)
         except Exception:
-            pass
+            referral_id = 0
 
-    u = get_user(
-        user.id
+    ensure_user(
+        user,
+        referral_id,
     )
 
-    premium_text = (
-        "✅"
-        if is_premium(user.id)
-        else "❌"
-    )
-
-    await update.message.reply_text(
-        tr(
-            user.id,
-            "welcome",
-            name=user.first_name or "User",
-            credits=u["credits"],
-            premium=premium_text,
-            level=u["level"],
-            streak=u["streak"],
-            referrals=u["referral_count"]
-        ),
-        reply_markup=main_keyboard(
-            user.id
-        ),
-        parse_mode=ParseMode.HTML
-    )
-
-
-# ============================================================
-# BASIC COMMANDS
-# ============================================================
-
-async def menu(update, context):
-    await update.message.reply_text(
-        "🏠 <b>MAIN MENU</b>\n\n"
-        "🔥 Choose your next action!",
-        reply_markup=main_keyboard(
-            update.effective_user.id
-        ),
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def account(update, context):
-    uid = update.effective_user.id
-    u = get_user(uid)
-
-    await update.message.reply_text(
-        f"""👤 <b>YOUR ACCOUNT</b>
-
-━━━━━━━━━━━━━━━━━━━━
-🆔 ID: <code>{uid}</code>
-👤 Name: {u["first_name"]}
-🔗 Username: @{u["username"] or "none"}
-
-💳 Credits: <b>{u["credits"]}</b>
-💎 Premium: {"✅ ACTIVE" if is_premium(uid) else "❌ FREE"}
-
-📅 Premium Until:
-<code>{premium_expiry_text(uid)}</code>
-
-⭐ XP: {u["xp"]}
-🏆 Level: {u["level"]}
-🔥 Streak: {u["streak"]}
-
-👥 Referrals: {u["referral_count"]}
-💰 Referral Earnings: {u["referral_earned"]}
-━━━━━━━━━━━━━━━━━━━━""",
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def bonus(update, context):
-    uid = update.effective_user.id
-    u = get_user(uid)
-
-    today = date.today().isoformat()
-
-    if u["last_bonus"] == today:
+    if is_banned(user.id):
         await update.message.reply_text(
-            "⏰ <b>DAILY BONUS ALREADY CLAIMED</b>\n\n"
-            "🔥 Come back tomorrow for another reward!",
-            parse_mode=ParseMode.HTML
+            tr(user.id, "banned"),
+            parse_mode=ParseMode.HTML,
         )
         return
 
-    add_credits(
-        uid,
-        DAILY_BONUS,
-        "Daily bonus"
+    daily, streak, bonus = process_daily(
+        user.id
     )
 
-    add_xp(
-        uid,
-        10
-    )
+    extra = ""
 
-    con = db()
-
-    con.execute(
-        "UPDATE users SET last_bonus=? WHERE user_id=?",
-        (
-            today,
-            uid
+    if daily:
+        extra = (
+            f"\n\n🎁 Daily Bonus: <b>+{bonus}</b> Credits"
+            f"\n🔥 Streak: <b>{streak}</b> দিন"
         )
-    )
-
-    con.commit()
-    con.close()
-
-    u = get_user(uid)
 
     await update.message.reply_text(
-        f"""🎁 <b>DAILY DROP UNLOCKED!</b>
-
-💰 +{DAILY_BONUS} Credits
-⭐ +10 XP
-🔥 Streak: {u["streak"]}
-
-━━━━━━━━━━━━━━━━━━━━
-💳 New Balance: {u["credits"]}
-━━━━━━━━━━━━━━━━━━━━
-
-🚀 KEEP COMING BACK!""",
-        parse_mode=ParseMode.HTML
+        tr(user.id, "welcome")
+        + extra
+        + "\n\n👇 নিচের মেনু ব্যবহার করুন।",
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard(),
     )
 
 
-async def refer(update, context):
+# ============================================================
+# MAIN MENU
+# ============================================================
+
+async def main_menu(update, context):
+    user = update.effective_user
+
+    if not get_user(user.id):
+        ensure_user(user)
+
+    if is_banned(user.id):
+        await update.message.reply_text(
+            tr(user.id, "banned"),
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    await update.message.reply_text(
+        tr(user.id, "main"),
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard(),
+    )
+
+
+# ============================================================
+# PDF MENU
+# ============================================================
+
+async def pdf_menu(update, context):
+    await update.message.reply_text(
+        "📕 <b>PDF TOOLS</b>\n\n"
+        "নিচের যেকোনো PDF Tool নির্বাচন করুন।",
+        parse_mode=ParseMode.HTML,
+        reply_markup=grid_buttons(
+            PDF_TOOLS
+        ),
+    )
+
+
+# ============================================================
+# IMAGE MENU
+# ============================================================
+
+async def image_menu(update, context):
+    await update.message.reply_text(
+        "🖼️ <b>IMAGE TOOLS</b>\n\n"
+        "নিচের যেকোনো Image Tool নির্বাচন করুন।",
+        parse_mode=ParseMode.HTML,
+        reply_markup=grid_buttons(
+            IMAGE_TOOLS
+        ),
+    )
+
+
+# ============================================================
+# TEXT MENU
+# ============================================================
+
+async def text_menu(update, context):
+    await update.message.reply_text(
+        "📝 <b>TEXT TOOLS</b>\n\n"
+        "নিচের Tool নির্বাচন করুন।",
+        parse_mode=ParseMode.HTML,
+        reply_markup=grid_buttons(
+            TEXT_TOOLS
+        ),
+    )
+
+
+# ============================================================
+# UTILITY MENU
+# ============================================================
+
+async def utility_menu(update, context):
+    await update.message.reply_text(
+        "🧮 <b>UTILITY TOOLS</b>\n\n"
+        "Calculator, QR, Password, Converter ইত্যাদি।",
+        parse_mode=ParseMode.HTML,
+        reply_markup=grid_buttons(
+            UTILITY_TOOLS
+        ),
+    )
+
+
+# ============================================================
+# ACCOUNT
+# ============================================================
+
+async def account(update, context):
     uid = update.effective_user.id
-    u = get_user(uid)
+
+    row = get_user(uid)
+
+    if not row:
+        ensure_user(update.effective_user)
+        row = get_user(uid)
+
+    premium_text = (
+        "💎 ACTIVE"
+        if is_premium(uid)
+        else "🆓 FREE"
+    )
+
+    until = row["premium_until"] or "N/A"
+
+    await update.message.reply_text(
+        "👤 <b>MY ACCOUNT</b>\n\n"
+        f"🆔 ID: <code>{uid}</code>\n"
+        f"👤 Name: {row['first_name'] or 'User'}\n"
+        f"🔹 Username: @{row['username'] or 'N/A'}\n\n"
+        f"💰 Credits: <b>{fmt_num(row['credits'])}</b>\n"
+        f"⭐ XP: <b>{fmt_num(row['xp'])}</b>\n"
+        f"🏆 Level: <b>{level_from_xp(row['xp'])}</b>\n"
+        f"🔥 Streak: <b>{row['streak']}</b>\n"
+        f"👥 Referrals: <b>{row['referral_count']}</b>\n"
+        f"💎 Premium: <b>{premium_text}</b>\n"
+        f"⏰ Premium Until: <code>{until}</code>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+# ============================================================
+# DAILY
+# ============================================================
+
+async def daily_bonus(update, context):
+    uid = update.effective_user.id
+
+    success, streak, bonus = process_daily(
+        uid
+    )
+
+    if success:
+        await update.message.reply_text(
+            "🎁 <b>DAILY BONUS CLAIMED!</b>\n\n"
+            f"💰 +<b>{bonus}</b> Credits\n"
+            f"🔥 Streak: <b>{streak}</b> দিন\n\n"
+            "আগামীকাল আবার আসুন।",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.message.reply_text(
+            "⏳ <b>আজকের Daily Bonus ইতিমধ্যে নেওয়া হয়েছে।</b>\n\n"
+            "আগামীকাল আবার চেষ্টা করুন।",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+# ============================================================
+# REFERRAL
+# ============================================================
+
+async def referral(update, context):
+    uid = update.effective_user.id
 
     me = await context.bot.get_me()
 
     link = (
         f"https://t.me/{me.username}"
-        f"?start={u['referral_code']}"
+        f"?start=ref_{uid}"
     )
+
+    row = get_user(uid)
 
     await update.message.reply_text(
-        f"""╔══════════════════════════════╗
-       👥 <b>REFERRAL ENGINE</b>
-╚══════════════════════════════╝
-
-🔥 SHARE → FRIEND JOINS → REWARD
-
-🔗 <b>Your Referral Link:</b>
-<code>{link}</code>
-
-━━━━━━━━━━━━━━━━━━━━
-👥 Total Referrals: {u["referral_count"]}
-💰 Earned Credits: {u["referral_earned"]}
-⭐ XP: {u["xp"]}
-━━━━━━━━━━━━━━━━━━━━
-
-🎯 MILESTONES
-
-5  Referrals → 🎁 Bonus
-10 Referrals → 🔥 Bonus
-25 Referrals → 💎 Bonus
-50 Referrals → 👑 Bonus
-
-🚀 BUILD YOUR NETWORK!""",
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def referral_stats(update, context):
-    await refer(
-        update,
-        context
-    )
-
-
-async def history_cmd(update, context):
-    uid = update.effective_user.id
-
-    con = db()
-
-    rows = con.execute("""
-        SELECT tool,status,filename,credits,created_at
-        FROM history
-        WHERE user_id=?
-        ORDER BY id DESC
-        LIMIT 15
-    """, (uid,)).fetchall()
-
-    con.close()
-
-    if not rows:
-        await update.message.reply_text(
-            "📜 <b>HISTORY EMPTY</b>\n\n"
-            "Your processed files will appear here.",
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-    text = (
-        "📜 <b>RECENT HISTORY</b>\n\n"
-    )
-
-    for r in rows:
-
-        icon = (
-            "✅"
-            if r["status"] == "success"
-            else "❌"
-        )
-
-        text += (
-            f"{icon} <b>{r['tool']}</b>\n"
-            f"📄 {r['filename'][:35]}\n"
-            f"💳 {r['credits']} credits\n"
-            f"🕒 {r['created_at'][:16]}\n"
-            f"━━━━━━━━━━━━━━\n"
-        )
-
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def credit_history_cmd(
-    update,
-    context
-):
-    uid = update.effective_user.id
-
-    con = db()
-
-    rows = con.execute("""
-        SELECT amount,reason,created_at
-        FROM credit_history
-        WHERE user_id=?
-        ORDER BY id DESC
-        LIMIT 20
-    """, (uid,)).fetchall()
-
-    con.close()
-
-    if not rows:
-        await update.message.reply_text(
-            "💳 Credit history is empty."
-        )
-        return
-
-    text = (
-        "💳 <b>CREDIT HISTORY</b>\n\n"
-    )
-
-    for r in rows:
-
-        sign = (
-            "+"
-            if r["amount"] >= 0
-            else ""
-        )
-
-        text += (
-            f"{sign}{r['amount']} — "
-            f"{r['reason']}\n"
-            f"🕒 {r['created_at'][:16]}\n"
-        )
-
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML
-    )
-
-
-# ============================================================
-# PREMIUM USER MENU
-# ============================================================
-
-async def premium(update, context):
-    uid = update.effective_user.id
-
-    if is_premium(uid):
-        await update.message.reply_text(
-            f"""💎 <b>PREMIUM ACTIVE</b>
-
-🎉 আপনার Premium বর্তমানে Active!
-
-📅 Valid Until:
-<code>{premium_expiry_text(uid)}</code>
-
-🚀 Premium সুবিধা:
-• 📦 Larger File Limit
-• ⚡ Priority Processing
-• 💎 Premium Access
-• 🔥 Premium Badge
-• 📚 Advanced Processing
-
-👇 Premium status দেখতে পারেন:""",
-            reply_markup=InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton(
-                        "📋 Premium Status",
-                        callback_data="premium:status"
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "🔄 Renew Premium",
-                        callback_data="premium:menu"
-                    )
-                ]
-            ]),
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-    await update.message.reply_text(
-        f"""╔══════════════════════════════╗
-          💎 <b>PREMIUM POWER</b>
-╚══════════════════════════════╝
-
-🚀 FREE USER শুধু শুরু করেছে...
-💎 PREMIUM USER পুরো POWER ব্যবহার করে!
-
-━━━━━━━━━━━━━━━━━━━━
-⚡ Priority Processing
-📦 Larger File Limit
-🎯 Premium Access
-🔥 Premium Badge
-📚 Advanced Processing
-━━━━━━━━━━━━━━━━━━━━
-
-💎 WEEKLY  → ৳{WEEKLY_PRICE}
-👑 MONTHLY → ৳{MONTHLY_PRICE}
-
-📱 Payment:
-• bKash
-• Nagad
-
-👇 আপনার Plan নির্বাচন করুন:""",
-        reply_markup=premium_plan_keyboard(),
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def premium_status_message(
-    query
-):
-    uid = query.from_user.id
-    u = get_user(uid)
-
-    if is_premium(uid):
-        text = f"""💎 <b>YOUR PREMIUM STATUS</b>
-
-🟢 Status: <b>ACTIVE</b>
-
-🆔 User ID:
-<code>{uid}</code>
-
-📅 Premium Until:
-<code>{premium_expiry_text(uid)}</code>
-
-📦 File Limit:
-<b>{PREMIUM_FILE_LIMIT_MB} MB</b>
-
-🚀 Premium is currently active."""
-    else:
-        text = f"""💎 <b>YOUR PREMIUM STATUS</b>
-
-🔴 Status: <b>FREE</b>
-
-📦 Free File Limit:
-<b>{FREE_FILE_LIMIT_MB} MB</b>
-
-💎 Weekly: ৳{WEEKLY_PRICE}
-👑 Monthly: ৳{MONTHLY_PRICE}
-
-👇 Upgrade করতে নিচের button ব্যবহার করুন."""
-
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton(
-                    "💎 Upgrade / Renew",
-                    callback_data="premium:menu"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🏠 Main Menu",
-                    callback_data="home"
-                )
-            ]
-        ]),
-        parse_mode=ParseMode.HTML
+        "👥 <b>REFERRAL SYSTEM</b>\n\n"
+        f"🎁 প্রতি সফল Referral: <b>+{REFERRAL_REWARD}</b> Credits\n"
+        f"⭐ Referral XP: <b>+{REFERRAL_XP}</b>\n\n"
+        f"👥 Total Referral: <b>{row['referral_count']}</b>\n\n"
+        "🔗 <b>Your Referral Link:</b>\n"
+        f"<code>{link}</code>\n\n"
+        "বন্ধুদের এই লিংক পাঠান।",
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -2655,132 +2248,333 @@ async def premium_status_message(
 # ============================================================
 
 async def redeem(update, context):
-    context.user_data[
-        "waiting_redeem"
-    ] = True
+    context.user_data["waiting"] = "redeem"
 
     await update.message.reply_text(
-        """🎟️ <b>REDEEM CENTER</b>
-
-🔐 Send your redeem code now.
-
-Example:
-<code>WELCOME100</code>""",
-        parse_mode=ParseMode.HTML
+        "🎟️ <b>REDEEM CODE</b>\n\n"
+        "আপনার Redeem Code পাঠান।\n\n"
+        "উদাহরণ:\n"
+        "<code>RAFIM2026</code>",
+        parse_mode=ParseMode.HTML,
     )
 
 
-async def handle_redeem_text(update):
+async def process_redeem(update, code):
     uid = update.effective_user.id
 
-    code = update.message.text.strip().upper()
+    code = code.strip().upper()
 
-    con = db()
+    conn = db()
 
-    row = con.execute(
-        "SELECT * FROM redeem_codes WHERE code=?",
-        (code,)
+    row = conn.execute(
+        """
+        SELECT * FROM redeem_codes
+        WHERE code=? AND active=1
+        """,
+        (code,),
     ).fetchone()
 
     if not row:
-        con.close()
+        conn.close()
 
-        return await update.message.reply_text(
-            "❌ <b>INVALID CODE</b>",
-            parse_mode=ParseMode.HTML
+        await update.message.reply_text(
+            "❌ <b>ERROR</b>\n\n"
+            "Invalid অথবা expired redeem code।",
+            parse_mode=ParseMode.HTML,
         )
-
-    if not row["enabled"]:
-        con.close()
-
-        return await update.message.reply_text(
-            "⛔ This code is disabled."
-        )
+        return
 
     if row["used_count"] >= row["max_uses"]:
-        con.close()
+        conn.close()
 
-        return await update.message.reply_text(
-            "🚫 This code has reached its usage limit."
+        await update.message.reply_text(
+            "❌ এই Redeem Code-এর limit শেষ।",
+            parse_mode=ParseMode.HTML,
         )
+        return
 
-    used = con.execute(
-        "SELECT * FROM redemptions "
-        "WHERE user_id=? AND code=?",
-        (
-            uid,
-            code
-        )
+    already = conn.execute(
+        """
+        SELECT id FROM redemptions
+        WHERE code=? AND user_id=?
+        """,
+        (code, uid),
     ).fetchone()
 
-    if used:
-        con.close()
+    if already:
+        conn.close()
 
-        return await update.message.reply_text(
-            "⚠️ You have already used this code."
+        await update.message.reply_text(
+            "⚠️ আপনি এই Code ইতিমধ্যে ব্যবহার করেছেন।",
+            parse_mode=ParseMode.HTML,
         )
+        return
 
-    con.execute(
-        "UPDATE redeem_codes "
-        "SET used_count=used_count+1 "
-        "WHERE code=?",
-        (code,)
+    conn.execute(
+        """
+        INSERT INTO redemptions
+        (code, user_id, created_at)
+        VALUES (?, ?, ?)
+        """,
+        (code, uid, now()),
     )
 
-    con.execute("""
-        INSERT INTO redemptions(
-            user_id,code,credits,created_at
-        )
-        VALUES(?,?,?,?)
-    """, (
-        uid,
-        code,
-        row["credits"],
-        datetime.now().isoformat()
-    ))
-
-    con.commit()
-    con.close()
-
-    add_credits(
-        uid,
-        row["credits"],
-        f"Redeem {code}"
+    conn.execute(
+        """
+        UPDATE redeem_codes
+        SET used_count=used_count+1
+        WHERE code=?
+        """,
+        (code,),
     )
+
+    conn.execute(
+        """
+        UPDATE users
+        SET credits=credits+?
+        WHERE user_id=?
+        """,
+        (row["credits"], uid),
+    )
+
+    conn.execute(
+        """
+        INSERT INTO credit_history
+        (user_id, amount, reason, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            uid,
+            row["credits"],
+            f"Redeem: {code}",
+            now(),
+        ),
+    )
+
+    conn.commit()
+    conn.close()
 
     await update.message.reply_text(
-        f"""🎟️━━━━━━━━━━━━━━━━━━🎟️
-       <b>CODE ACTIVATED!</b>
-🎟️━━━━━━━━━━━━━━━━━━🎟️
-
-💰 Reward: +{row["credits"]} Credits
-
-🔥 YOUR BALANCE JUST GOT STRONGER!""",
-        parse_mode=ParseMode.HTML
+        "🎉 <b>REDEEM SUCCESS!</b>\n\n"
+        f"🎟️ Code: <code>{code}</code>\n"
+        f"💰 Credits Added: <b>+{row['credits']}</b>",
+        parse_mode=ParseMode.HTML,
     )
 
 
 # ============================================================
-# SETTINGS / LANGUAGE
+# HISTORY
+# ============================================================
+
+async def history(update, context):
+    uid = update.effective_user.id
+
+    conn = db()
+
+    rows = conn.execute(
+        """
+        SELECT tool, status, created_at
+        FROM history
+        WHERE user_id=?
+        ORDER BY id DESC
+        LIMIT 15
+        """,
+        (uid,),
+    ).fetchall()
+
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text(
+            "📜 <b>History Empty</b>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    text = "📜 <b>RECENT HISTORY</b>\n\n"
+
+    for r in rows:
+        icon = (
+            "✅"
+            if r["status"] == "SUCCESS"
+            else "❌"
+        )
+
+        text += (
+            f"{icon} <b>{r['tool']}</b>\n"
+            f"🕐 {r['created_at']}\n\n"
+        )
+
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+    )
+
+
+# ============================================================
+# PREMIUM
+# ============================================================
+
+async def premium(update, context):
+    await update.message.reply_text(
+        "💎 <b>PREMIUM SYSTEM</b>\n\n"
+        "🚀 Premium সুবিধা:\n"
+        "• বেশি File Limit\n"
+        "• Premium Tools\n"
+        "• Faster Processing\n"
+        "• Premium Access\n\n"
+        f"📅 Weekly: <b>{WEEKLY_PRICE} টাকা</b>\n"
+        f"📅 Monthly: <b>{MONTHLY_PRICE} টাকা</b>\n\n"
+        f"💳 bKash: <code>{BKASH_NUMBER}</code>\n"
+        f"💳 Nagad: <code>{NAGAD_NUMBER}</code>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "💎 Weekly Request",
+                        callback_data="premium:weekly",
+                    ),
+                    InlineKeyboardButton(
+                        "💎 Monthly Request",
+                        callback_data="premium:monthly",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "📊 Premium Status",
+                        callback_data="premium:status",
+                    ),
+                ],
+            ]
+        ),
+    )
+
+
+async def create_premium_request(
+    update,
+    plan,
+):
+    uid = update.effective_user.id
+
+    price = (
+        WEEKLY_PRICE
+        if plan == "weekly"
+        else MONTHLY_PRICE
+    )
+
+    conn = db()
+
+    conn.execute(
+        """
+        INSERT INTO premium_requests
+        (user_id, plan, status, created_at, updated_at)
+        VALUES (?, ?, 'pending', ?, ?)
+        """,
+        (
+            uid,
+            plan,
+            now(),
+            now(),
+        ),
+    )
+
+    request_id = conn.execute(
+        "SELECT last_insert_rowid()"
+    ).fetchone()[0]
+
+    conn.commit()
+    conn.close()
+
+    await update.effective_message.reply_text(
+        "📨 <b>Premium Request Sent!</b>\n\n"
+        f"🆔 Request: <code>#{request_id}</code>\n"
+        f"📦 Plan: <b>{plan.title()}</b>\n"
+        f"💰 Price: <b>{price} টাকা</b>\n\n"
+        "Admin approval-এর জন্য অপেক্ষা করুন।",
+        parse_mode=ParseMode.HTML,
+    )
+
+    await update.get_bot().send_message(
+        ADMIN_ID,
+        "💎 <b>NEW PREMIUM REQUEST</b>\n\n"
+        f"🆔 Request: <code>#{request_id}</code>\n"
+        f"👤 User: <code>{uid}</code>\n"
+        f"📦 Plan: <b>{plan}</b>\n"
+        f"💰 Price: <b>{price} টাকা</b>",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✅ APPROVE",
+                        callback_data=f"premapprove:{request_id}",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ REJECT",
+                        callback_data=f"premreject:{request_id}",
+                    ),
+                ]
+            ]
+        ),
+    )
+
+
+async def premium_status(update, context):
+    uid = update.effective_user.id
+
+    row = get_user(uid)
+
+    if is_premium(uid):
+        until = row["premium_until"]
+
+        await update.effective_message.reply_text(
+            "💎 <b>PREMIUM ACTIVE</b>\n\n"
+            f"⏰ Valid Until:\n<code>{until}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+    else:
+        await update.effective_message.reply_text(
+            "🆓 আপনার Premium বর্তমানে Active নয়।",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+# ============================================================
+# SETTINGS
 # ============================================================
 
 async def settings(update, context):
     uid = update.effective_user.id
 
     await update.message.reply_text(
-        "⚙️ <b>SETTINGS CENTER</b>\n\n"
-        "Customize your Rafim PDF Pro experience.",
-        reply_markup=settings_keyboard(uid),
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def show_languages(query):
-    await query.edit_message_text(
-        "🌐 <b>SELECT YOUR LANGUAGE</b>\n\n"
-        "Language will change the bot's menus, buttons and messages.",
-        reply_markup=language_keyboard(),
-        parse_mode=ParseMode.HTML
+        "⚙️ <b>SETTINGS</b>\n\n"
+        "🌐 Language নির্বাচন করুন:",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "🇧🇩 বাংলা",
+                        callback_data="lang:bn",
+                    ),
+                    InlineKeyboardButton(
+                        "🇬🇧 English",
+                        callback_data="lang:en",
+                    ),
+                    InlineKeyboardButton(
+                        "🇮🇳 हिन्दी",
+                        callback_data="lang:hi",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🏠 Main Menu",
+                        callback_data="main",
+                    )
+                ],
+            ]
+        ),
     )
 
 
@@ -2790,1580 +2584,856 @@ async def show_languages(query):
 
 async def support(update, context):
     await update.message.reply_text(
-        f"""🆘 <b>SUPPORT CENTER</b>
-
-Need help?
-
-📩 Contact:
-@{SUPPORT_USERNAME}
-
-Or send your problem here and a support ticket will be created.""",
-        parse_mode=ParseMode.HTML
-    )
-
-    context.user_data[
-        "support_mode"
-    ] = True
-
-
-# ============================================================
-# PDF / IMAGE MENU
-# ============================================================
-
-async def show_pdf_menu(update):
-    await update.message.reply_text(
-        """📕 <b>PDF POWER CENTER</b>
-
-🔥 Choose a PDF operation:""",
-        reply_markup=pdf_keyboard(
-            update.effective_user.id
+        "🆘 <b>SUPPORT CENTER</b>\n\n"
+        "কোনো সমস্যা হলে Support-এ যোগাযোগ করুন।\n\n"
+        f"👨‍💻 Support: @{SUPPORT_USERNAME}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "💬 Contact Support",
+                        url=f"https://t.me/{SUPPORT_USERNAME}",
+                    )
+                ]
+            ]
         ),
-        parse_mode=ParseMode.HTML
     )
 
 
-async def show_image_menu(update):
-    await update.message.reply_text(
-        """🖼️ <b>IMAGE POWER CENTER</b>
+async def support_text(update, context):
+    uid = update.effective_user.id
+    text = update.message.text.strip()
 
-🔥 Choose an image operation:""",
-        reply_markup=image_keyboard(
-            update.effective_user.id
+    conn = db()
+
+    conn.execute(
+        """
+        INSERT INTO support_tickets
+        (user_id, message, status, created_at)
+        VALUES (?, ?, 'open', ?)
+        """,
+        (
+            uid,
+            text,
+            now(),
         ),
-        parse_mode=ParseMode.HTML
+    )
+
+    ticket_id = conn.execute(
+        "SELECT last_insert_rowid()"
+    ).fetchone()[0]
+
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(
+        "🎫 <b>Support Ticket Created!</b>\n\n"
+        f"🆔 Ticket: <code>#{ticket_id}</code>\n"
+        "Admin আপনার মেসেজ দেখবেন।",
+        parse_mode=ParseMode.HTML,
+    )
+
+    await context.bot.send_message(
+        ADMIN_ID,
+        "🆘 <b>NEW SUPPORT TICKET</b>\n\n"
+        f"🎫 Ticket: <code>#{ticket_id}</code>\n"
+        f"👤 User: <code>{uid}</code>\n\n"
+        f"{text[:3000]}",
+        parse_mode=ParseMode.HTML,
     )
 
 
 # ============================================================
-# TOOL SELECTION
+# TEXT TOOL PROCESSOR
 # ============================================================
 
-async def select_tool(
-    query,
-    tool
-):
-    uid = query.from_user.id
+async def process_text_tool(update, context, tool):
+    uid = update.effective_user.id
+    text = update.message.text
 
-    if tool not in TOOL_COST:
-        return
+    try:
+        if tool == "word_count":
+            result = word_count(text)
 
-    cost = TOOL_COST[tool]
+            await update.message.reply_text(
+                result,
+                parse_mode=ParseMode.HTML,
+            )
 
-    await query.edit_message_text(
-        f"""⚡ <b>{tool}</b>
+        elif tool == "upper":
+            await update.message.reply_text(
+                text.upper()
+            )
 
-💳 Cost: {cost} Credits
+        elif tool == "lower":
+            await update.message.reply_text(
+                text.lower()
+            )
 
-📤 Send your file now.
+        elif tool == "title":
+            await update.message.reply_text(
+                text.title()
+            )
 
-━━━━━━━━━━━━━━━━━━━━
-📦 Free Limit: {FREE_FILE_LIMIT_MB} MB
-💎 Premium Limit: {PREMIUM_FILE_LIMIT_MB} MB
-━━━━━━━━━━━━━━━━━━━━
+        elif tool == "clean":
+            await update.message.reply_text(
+                clean_text(text)
+            )
 
-🔥 RAFIM PROCESSING ENGINE READY!""",
-        parse_mode=ParseMode.HTML
-    )
+        elif tool == "json":
+            result = json_format(text)
 
+            await update.message.reply_text(
+                f"<pre>{result[:3900]}</pre>",
+                parse_mode=ParseMode.HTML,
+            )
 
-# ============================================================
-# PREMIUM REQUEST CREATION
-# ============================================================
+        elif tool == "url_encode":
+            await update.message.reply_text(
+                quote(text)
+            )
 
-async def create_premium_request(
-    query,
-    context,
-    plan
-):
-    uid = query.from_user.id
+        elif tool == "url_decode":
+            await update.message.reply_text(
+                unquote(text)
+            )
 
-    # Existing pending request check
-    con = db()
+        elif tool == "base64_encode":
+            await update.message.reply_text(
+                safe_base64_encode(text)
+            )
 
-    pending = con.execute("""
-        SELECT *
-        FROM premium_requests
-        WHERE user_id=?
-        AND status='pending'
-        ORDER BY id DESC
-        LIMIT 1
-    """, (uid,)).fetchone()
+        elif tool == "base64_decode":
+            await update.message.reply_text(
+                safe_base64_decode(text)
+            )
 
-    con.close()
+        elif tool == "encrypt":
+            parts = text.split(
+                "|||",
+                1,
+            )
 
-    if pending:
-        await query.edit_message_text(
-            f"""⏳ <b>PREMIUM REQUEST ALREADY PENDING</b>
+            if len(parts) != 2:
+                raise ValueError(
+                    "Format: password|||text"
+                )
 
-🆔 Request: #{pending["id"]}
-📦 Plan: {pending["plan"].title()}
-🔐 Transaction ID:
-<code>{pending["transaction_id"]}</code>
+            result = encrypt_text(
+                parts[0],
+                parts[1],
+            )
 
-⏳ Admin verification is still pending.
+            await update.message.reply_text(
+                result
+            )
 
-Please wait for the admin decision.""",
-            parse_mode=ParseMode.HTML
+        elif tool == "decrypt":
+            parts = text.split(
+                "|||",
+                1,
+            )
+
+            if len(parts) != 2:
+                raise ValueError(
+                    "Format: password|||encrypted_text"
+                )
+
+            result = decrypt_text(
+                parts[0],
+                parts[1],
+            )
+
+            await update.message.reply_text(
+                result
+            )
+
+        add_history(
+            uid,
+            TEXT_TOOLS.get(tool, tool),
         )
-        return
 
-    context.user_data[
-        "premium_plan"
-    ] = plan
+        add_xp(uid)
 
-    await query.edit_message_text(
-        f"""💎 <b>{plan.title()} PREMIUM</b>
+    except Exception as e:
+        await update.message.reply_text(
+            "❌ <b>ERROR</b>\n\n"
+            f"<code>{str(e)[:1500]}</code>\n\n"
+            "🔄 সঠিক Format দিয়ে আবার চেষ্টা করুন।",
+            parse_mode=ParseMode.HTML,
+        )
 
-💰 Price:
-<b>৳{WEEKLY_PRICE if plan == "weekly" else MONTHLY_PRICE}</b>
-
-📱 Select your payment method:
-
-👇 Choose bKash or Nagad:""",
-        reply_markup=premium_payment_keyboard(plan),
-        parse_mode=ParseMode.HTML
+    context.user_data.pop(
+        "text_tool",
+        None,
     )
 
 
 # ============================================================
-# CALLBACK
+# UTILITY PROCESSOR
 # ============================================================
 
-async def callback_handler(
-    update,
-    context
-):
+async def process_utility(update, context, tool):
+    uid = update.effective_user.id
+    text = update.message.text.strip()
+
+    try:
+        if tool == "calculator":
+            result = calculate_expression(
+                text
+            )
+
+            await update.message.reply_text(
+                f"🧮 <b>Result:</b>\n<code>{result}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif tool == "unit":
+            result = unit_convert(text)
+
+            await update.message.reply_text(
+                f"📏 <b>Result</b>\n\n{result}",
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif tool == "date_calc":
+            result = date_calculator(text)
+
+            await update.message.reply_text(
+                result,
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif tool == "random":
+            result = random_generator(text)
+
+            await update.message.reply_text(
+                f"🎲 <b>Random Result:</b>\n\n{result}",
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif tool == "uuid":
+            await update.message.reply_text(
+                f"🆔 <code>{uuid.uuid4()}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif tool == "password":
+            length = 16
+
+            if text.isdigit():
+                length = int(text)
+
+            result = password_generator(
+                length
+            )
+
+            await update.message.reply_text(
+                "🔑 <b>Password Generated</b>\n\n"
+                f"<code>{result}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif tool == "qr":
+            data = make_qr(text)
+
+            await send_result(
+                update.message,
+                data,
+                "qr.png",
+                "🔳 QR Generated",
+            )
+
+        add_history(
+            uid,
+            UTILITY_TOOLS.get(tool, tool),
+        )
+
+        add_xp(uid)
+
+    except Exception as e:
+        await update.message.reply_text(
+            "❌ <b>ERROR</b>\n\n"
+            f"<code>{str(e)[:1200]}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    context.user_data.pop(
+        "utility_tool",
+        None,
+    )
+
+
+# ============================================================
+# TOOL CALLBACK
+# ============================================================
+
+async def tool_callback(update, context):
     query = update.callback_query
 
-    await query.answer()
+    await safe_answer(query)
 
-    uid = query.from_user.id
+    uid = update.effective_user.id
 
     if is_banned(uid):
-        await query.answer(
-            "🚫 Account restricted.",
-            show_alert=True
+        await safe_edit(
+            query,
+            "🚫 আপনার অ্যাকাউন্টটি বন্ধ করা হয়েছে।",
         )
         return
 
     data = query.data
 
-    # --------------------------------------------------------
-    # HOME
-    # --------------------------------------------------------
-
-    if data == "home":
-
-        await query.message.edit_text(
-            "🏠 <b>MAIN MENU</b>\n\n"
-            "🔥 Welcome back!",
-            parse_mode=ParseMode.HTML
+    if data == "main":
+        await safe_edit(
+            query,
+            "🏠 <b>Main Menu</b>\n\n"
+            "নিচের Reply Keyboard ব্যবহার করুন।",
         )
-
-        await query.message.reply_text(
-            "Choose an option:",
-            reply_markup=main_keyboard(uid)
-        )
-
         return
 
-    # --------------------------------------------------------
-    # LANGUAGE
-    # --------------------------------------------------------
+    if data == "pdfmenu":
+        await safe_edit(
+            query,
+            "📕 <b>PDF TOOLS</b>",
+            grid_buttons(PDF_TOOLS),
+        )
+        return
 
-    if data == "settings:language":
-        await show_languages(query)
+    if data == "imagemenu":
+        await safe_edit(
+            query,
+            "🖼️ <b>IMAGE TOOLS</b>",
+            grid_buttons(IMAGE_TOOLS),
+        )
         return
 
     if data.startswith("lang:"):
+        selected = data.split(":", 1)[1]
 
-        lang = data.split(
-            ":",
-            1
-        )[1]
+        if selected not in TEXTS:
+            selected = "bn"
 
-        set_language(
-            uid,
-            lang
-        )
+        conn = db()
 
-        u = get_user(uid)
-
-        await query.edit_message_text(
-            f"✅ <b>{LANGUAGES.get(lang, 'English')}</b>\n\n"
-            f"{tr(uid, 'saved')}",
-            parse_mode=ParseMode.HTML
-        )
-
-        await query.message.reply_text(
-            tr(
-                uid,
-                "welcome",
-                name=query.from_user.first_name or "User",
-                credits=u["credits"],
-                premium="✅" if is_premium(uid) else "❌",
-                level=u["level"],
-                streak=u["streak"],
-                referrals=u["referral_count"]
-            ),
-            reply_markup=main_keyboard(uid),
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # NOTIFICATIONS
-    # --------------------------------------------------------
-
-    if data == "settings:notifications":
-
-        u = get_user(uid)
-
-        new_value = (
-            0
-            if u["notifications"]
-            else 1
-        )
-
-        con = db()
-
-        con.execute(
-            "UPDATE users SET notifications=? "
-            "WHERE user_id=?",
+        conn.execute(
+            """
+            UPDATE users
+            SET language=?
+            WHERE user_id=?
+            """,
             (
-                new_value,
-                uid
-            )
+                selected,
+                uid,
+            ),
         )
 
-        con.commit()
-        con.close()
+        conn.commit()
+        conn.close()
 
-        await query.edit_message_text(
-            f"🔔 Notifications: "
-            f"{'✅ ON' if new_value else '❌ OFF'}",
-            reply_markup=settings_keyboard(uid)
-        )
-
-        return
-
-    # ========================================================
-    # PREMIUM MENU
-    # ========================================================
-
-    if data == "premium:menu":
-
-        if is_premium(uid):
-            await premium_status_message(
-                query
-            )
-            return
-
-        await query.edit_message_text(
-            f"""💎 <b>PREMIUM POWER</b>
-
-━━━━━━━━━━━━━━━━━━━━
-⚡ Priority Processing
-📦 Larger File Limit
-🎯 Premium Access
-🔥 Premium Badge
-📚 Advanced Processing
-━━━━━━━━━━━━━━━━━━━━
-
-💎 Weekly: ৳{WEEKLY_PRICE}
-👑 Monthly: ৳{MONTHLY_PRICE}
-
-👇 Choose your plan:""",
-            reply_markup=premium_plan_keyboard(),
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-    # ========================================================
-    # PREMIUM STATUS
-    # ========================================================
-
-    if data == "premium:status":
-
-        await premium_status_message(
-            query
-        )
-
-        return
-
-    # ========================================================
-    # PREMIUM PLAN
-    # ========================================================
-
-    if data == "premium:weekly":
-
-        await create_premium_request(
+        await safe_edit(
             query,
+            "✅ Language Updated.",
+            back_keyboard("main"),
+        )
+        return
+
+    if data.startswith("premium:"):
+        action = data.split(":", 1)[1]
+
+        if action == "weekly":
+            await create_premium_request(
+                update,
+                "weekly",
+            )
+            return
+
+        if action == "monthly":
+            await create_premium_request(
+                update,
+                "monthly",
+            )
+            return
+
+        if action == "status":
+            await premium_status(
+                update,
+                context,
+            )
+            return
+
+    if data.startswith("premapprove:"):
+        if not is_admin(uid):
+            return
+
+        request_id = int(
+            data.split(":", 1)[1]
+        )
+
+        await approve_premium(
+            update,
             context,
-            "weekly"
+            request_id,
         )
-
         return
 
-    if data == "premium:monthly":
+    if data.startswith("premreject:"):
+        if not is_admin(uid):
+            return
 
-        await create_premium_request(
-            query,
+        request_id = int(
+            data.split(":", 1)[1]
+        )
+
+        await reject_premium(
+            update,
             context,
-            "monthly"
+            request_id,
         )
-
         return
 
-    # ========================================================
-    # PAYMENT METHOD
-    # ========================================================
-
-    if data.startswith("payment:"):
-
-        parts = data.split(":")
-
-        if len(parts) != 3:
+    if data.startswith("admin:"):
+        if not is_admin(uid):
             return
 
-        method = parts[1]
-        plan = parts[2]
+        action = data.split(":", 1)[1]
 
-        if method == "bkash":
-            number = BKASH_NUMBER
-            method_name = "bKash"
-        else:
-            number = NAGAD_NUMBER
-            method_name = "Nagad"
+        if action == "stats":
+            await admin_stats_message(
+                update,
+                context,
+            )
 
-        price = (
-            WEEKLY_PRICE
-            if plan == "weekly"
-            else MONTHLY_PRICE
-        )
+        elif action == "users":
+            await safe_edit(
+                query,
+                "👥 <b>User Management</b>\n\n"
+                "Commands:\n"
+                "/userinfo USER_ID\n"
+                "/ban USER_ID\n"
+                "/unban USER_ID\n"
+                "/addcredits USER_ID AMOUNT",
+                admin_keyboard(),
+            )
 
-        context.user_data[
-            "premium_plan"
-        ] = plan
+        elif action == "premium":
+            await premium_requests(
+                update,
+                context,
+            )
 
-        context.user_data[
-            "premium_payment_method"
-        ] = method
+        elif action == "redeem":
+            await safe_edit(
+                query,
+                "🎟️ <b>Redeem Management</b>\n\n"
+                "/createredeem CODE CREDITS USES\n"
+                "/redeems",
+                admin_keyboard(),
+            )
 
-        context.user_data[
-            "premium_txn"
-        ] = True
+        elif action == "broadcast":
+            await safe_edit(
+                query,
+                "📢 <b>Broadcast</b>\n\n"
+                "/broadcast\n"
+                "/broadcastpremium\n"
+                "/broadcastfree\n"
+                "/cancelbroadcast JOB_ID\n"
+                "/retrybroadcast JOB_ID",
+                admin_keyboard(),
+            )
 
-        await query.edit_message_text(
-            f"""💎 <b>{plan.title()} PREMIUM</b>
+        elif action == "ban":
+            await safe_edit(
+                query,
+                "🚫 <b>Ban / Unban</b>\n\n"
+                "/ban USER_ID\n"
+                "/unban USER_ID",
+                admin_keyboard(),
+            )
 
-📱 Payment Method:
-<b>{method_name}</b>
+        elif action == "tickets":
+            await tickets(update, context)
 
-💰 Amount:
-<b>৳{price}</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-📲 Send Money to:
-<code>{number}</code>
-
-━━━━━━━━━━━━━━━━━━━━
-
-⚠️ Payment করার পরে আপনার
-<b>Transaction ID</b> পাঠান।
-
-Example:
-<code>TXN123456789</code>
-
-👇 এখন Transaction ID পাঠান।""",
-            parse_mode=ParseMode.HTML
-        )
+        elif action == "settings":
+            await safe_edit(
+                query,
+                "⚙️ <b>Admin Settings</b>\n\n"
+                "/adminsettings",
+                admin_keyboard(),
+            )
 
         return
-
-    # ========================================================
-    # ADMIN PREMIUM APPROVE / REJECT
-    # ========================================================
-
-    if data.startswith("premium_admin:"):
-
-        if uid != ADMIN_ID:
-            await query.answer(
-                "⛔ Admin only.",
-                show_alert=True
-            )
-            return
-
-        parts = data.split(":")
-
-        if len(parts) != 3:
-            return
-
-        action = parts[1]
-
-        try:
-            rid = int(parts[2])
-        except Exception:
-            await query.answer(
-                "Invalid request ID.",
-                show_alert=True
-            )
-            return
-
-        con = db()
-
-        row = con.execute(
-            "SELECT * FROM premium_requests "
-            "WHERE id=?",
-            (rid,)
-        ).fetchone()
-
-        if not row:
-            con.close()
-
-            await query.answer(
-                "❌ Request not found.",
-                show_alert=True
-            )
-
-            return
-
-        # Prevent duplicate decision
-        if row["status"] != "pending":
-            con.close()
-
-            await query.answer(
-                f"Already {row['status']}.",
-                show_alert=True
-            )
-
-            try:
-                await query.edit_message_reply_markup(
-                    reply_markup=None
-                )
-            except Exception:
-                pass
-
-            return
-
-        # ----------------------------------------------------
-        # APPROVE
-        # ----------------------------------------------------
-
-        if action == "approve":
-
-            days = (
-                30
-                if row["plan"] == "monthly"
-                else 7
-            )
-
-            # If existing Premium is active,
-            # extend from current expiry.
-            user = get_user(
-                row["user_id"]
-            )
-
-            base_date = datetime.now()
-
-            if user and user["premium_until"]:
-                try:
-                    current_expiry = datetime.fromisoformat(
-                        user["premium_until"]
-                    )
-
-                    if (
-                        user["premium"]
-                        and current_expiry > base_date
-                    ):
-                        base_date = current_expiry
-
-                except Exception:
-                    pass
-
-            expiry = (
-                base_date
-                + timedelta(days=days)
-            )
-
-            reviewed_at = datetime.now().isoformat()
-
-            con.execute("""
-                UPDATE premium_requests
-                SET status='approved',
-                    reviewed_at=?
-                WHERE id=?
-                AND status='pending'
-            """, (
-                reviewed_at,
-                rid
-            ))
-
-            con.execute("""
-                UPDATE users
-                SET premium=1,
-                    premium_until=?
-                WHERE user_id=?
-            """, (
-                expiry.isoformat(),
-                row["user_id"]
-            ))
-
-            con.commit()
-            con.close()
-
-            await query.edit_message_text(
-                f"""✅ <b>PREMIUM APPROVED</b>
-
-🆔 Request: #{rid}
-👤 User: <code>{row["user_id"]}</code>
-📦 Plan: {row["plan"].title()}
-🔐 TXN: <code>{row["transaction_id"]}</code>
-
-💎 Premium: ACTIVE
-📅 Until:
-<code>{expiry.strftime("%Y-%m-%d %H:%M")}</code>
-
-✅ User has been notified.""",
-                parse_mode=ParseMode.HTML
-            )
-
-            try:
-                await context.bot.send_message(
-                    row["user_id"],
-                    f"""🎉 <b>PREMIUM ACTIVATED!</b>
-
-💎 Plan:
-<b>{row["plan"].title()}</b>
-
-🆔 Request:
-<code>#{rid}</code>
-
-📅 Premium Until:
-<code>{expiry.strftime("%Y-%m-%d %H:%M")}</code>
-
-📦 File Limit:
-<b>{PREMIUM_FILE_LIMIT_MB} MB</b>
-
-🚀 Welcome to RAFIM PDF PRO Premium!""",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([
-                        [
-                            InlineKeyboardButton(
-                                "💎 Premium Status",
-                                callback_data="premium:status"
-                            )
-                        ]
-                    ])
-                )
-            except Exception:
-                pass
-
-            return
-
-        # ----------------------------------------------------
-        # REJECT
-        # ----------------------------------------------------
-
-        if action == "reject":
-
-            reviewed_at = datetime.now().isoformat()
-
-            con.execute("""
-                UPDATE premium_requests
-                SET status='rejected',
-                    reviewed_at=?
-                WHERE id=?
-                AND status='pending'
-            """, (
-                reviewed_at,
-                rid
-            ))
-
-            con.commit()
-            con.close()
-
-            await query.edit_message_text(
-                f"""❌ <b>PREMIUM REQUEST REJECTED</b>
-
-🆔 Request: #{rid}
-👤 User: <code>{row["user_id"]}</code>
-📦 Plan: {row["plan"].title()}
-🔐 TXN: <code>{row["transaction_id"]}</code>
-
-❌ User has been notified.""",
-                parse_mode=ParseMode.HTML
-            )
-
-            try:
-                await context.bot.send_message(
-                    row["user_id"],
-                    f"""❌ <b>PREMIUM REQUEST REJECTED</b>
-
-🆔 Request:
-<code>#{rid}</code>
-
-📦 Plan:
-{row["plan"].title()}
-
-🔐 Transaction ID:
-<code>{row["transaction_id"]}</code>
-
-আপনার Premium request approve করা হয়নি।
-
-Payment information সঠিক কিনা যাচাই করে আবার চেষ্টা করুন।""",
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup([
-                        [
-                            InlineKeyboardButton(
-                                "💎 Try Again",
-                                callback_data="premium:menu"
-                            )
-                        ]
-                    ])
-                )
-            except Exception:
-                pass
-
-            return
-
-    # ========================================================
-    # MERGE
-    # ========================================================
-
-    if data == "merge_start":
-
-        context.user_data[
-            "merge_mode"
-        ] = True
-
-        context.user_data[
-            "merge_files"
-        ] = []
-
-        await query.edit_message_text(
-            """🔗 <b>MERGE PDF MODE</b>
-
-Send multiple PDF files one by one.
-
-When finished, send:
-<code>/done</code>
-
-🔥 All selected PDFs will be merged into one file.""",
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-    # ========================================================
-    # TOOLS
-    # ========================================================
 
     if data.startswith("tool:"):
+        tool = data.split(":", 1)[1]
 
-        tool = data.split(
-            ":",
-            1
-        )[1]
+        if tool in TEXT_TOOLS:
+            context.user_data["text_tool"] = tool
 
-        context.user_data[
-            "selected_tool"
-        ] = tool
+            prompts = {
+                "word_count": "📝 Text পাঠান।",
+                "upper": "🔠 যে Text UPPERCASE করতে চান পাঠান।",
+                "lower": "🔡 যে Text lowercase করতে চান পাঠান।",
+                "title": "🔤 Text পাঠান।",
+                "clean": "🧹 Clean করার Text পাঠান।",
+                "json": "📋 JSON পাঠান।",
+                "url_encode": "🔗 URL/Text পাঠান।",
+                "url_decode": "🔓 Encoded URL পাঠান।",
+                "base64_encode": "🔐 Text পাঠান।",
+                "base64_decode": "🔓 Base64 পাঠান।",
+                "encrypt": (
+                    "🔒 Format:\n"
+                    "<code>password|||text</code>"
+                ),
+                "decrypt": (
+                    "🔓 Format:\n"
+                    "<code>password|||encrypted_text</code>"
+                ),
+            }
 
-        if tool == "Unlock PDF":
-            context.user_data[
-                "waiting_password"
-            ] = True
-
-        if tool == "Protect PDF":
-            context.user_data[
-                "waiting_password"
-            ] = True
-
-        if tool == "Add Watermark":
-            context.user_data[
-                "waiting_watermark"
-            ] = True
-
-        if tool == "Custom Resize":
-            context.user_data[
-                "waiting_resize"
-            ] = True
-
-        if tool == "Extract Pages":
-            context.user_data[
-                "waiting_pages"
-            ] = True
-
-        await query.edit_message_text(
-            f"""⚡ <b>{tool}</b>
-
-💳 Cost: {TOOL_COST.get(tool, 1)} Credits
-
-📤 এখন আপনার ফাইল পাঠান।
-
-🔥 RAFIM ENGINE READY!""",
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-
-# ============================================================
-# TEXT HANDLER
-# ============================================================
-
-async def text_handler(
-    update,
-    context
-):
-    uid = update.effective_user.id
-    text = update.message.text.strip()
-
-    if is_banned(uid):
-        await update.message.reply_text(
-            tr(
-                uid,
-                "banned"
-            )
-        )
-        return
-
-    # --------------------------------------------------------
-    # REDEEM
-    # --------------------------------------------------------
-
-    if context.user_data.get(
-        "waiting_redeem"
-    ):
-
-        context.user_data[
-            "waiting_redeem"
-        ] = False
-
-        await handle_redeem_text(
-            update
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # SUPPORT
-    # --------------------------------------------------------
-
-    if context.user_data.get(
-        "support_mode"
-    ):
-
-        context.user_data[
-            "support_mode"
-        ] = False
-
-        con = db()
-
-        cur = con.execute("""
-            INSERT INTO support_tickets(
-                user_id,message,status,created_at
-            )
-            VALUES(?,?,?,?)
-        """, (
-            uid,
-            text,
-            "open",
-            datetime.now().isoformat()
-        ))
-
-        ticket_id = cur.lastrowid
-
-        con.commit()
-        con.close()
-
-        await update.message.reply_text(
-            f"""🆘 <b>TICKET CREATED</b>
-
-🎟️ Ticket ID: #{ticket_id}
-
-✅ Your message has been sent to support.""",
-            parse_mode=ParseMode.HTML
-        )
-
-        try:
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"""🆘 <b>NEW SUPPORT TICKET</b>
-
-🎟️ #{ticket_id}
-🆔 {uid}
-
-💬 {text}""",
-                parse_mode=ParseMode.HTML
-            )
-        except Exception:
-            pass
-
-        return
-
-    # --------------------------------------------------------
-    # PREMIUM TRANSACTION ID
-    # --------------------------------------------------------
-
-    if context.user_data.get(
-        "premium_txn"
-    ):
-
-        context.user_data[
-            "premium_txn"
-        ] = False
-
-        plan = context.user_data.get(
-            "premium_plan",
-            "weekly"
-        )
-
-        payment_method = context.user_data.get(
-            "premium_payment_method",
-            "unknown"
-        )
-
-        # Prevent multiple pending requests
-        con = db()
-
-        existing = con.execute("""
-            SELECT *
-            FROM premium_requests
-            WHERE user_id=?
-            AND status='pending'
-            LIMIT 1
-        """, (uid,)).fetchone()
-
-        if existing:
-            con.close()
-
-            await update.message.reply_text(
-                f"""⏳ <b>REQUEST ALREADY PENDING</b>
-
-🆔 Request: #{existing["id"]}
-
-📦 Plan:
-{existing["plan"].title()}
-
-⏳ Admin verification is pending.
-
-Please wait for the decision.""",
-                parse_mode=ParseMode.HTML
+            await safe_edit(
+                query,
+                prompts.get(
+                    tool,
+                    "📝 Text পাঠান।",
+                ),
+                back_keyboard("main"),
             )
 
             return
 
-        cur = con.execute("""
-            INSERT INTO premium_requests(
-                user_id,
-                plan,
-                transaction_id,
-                status,
-                created_at
-            )
-            VALUES(?,?,?,?,?)
-        """, (
-            uid,
-            plan,
-            text,
-            "pending",
-            datetime.now().isoformat()
-        ))
-
-        req_id = cur.lastrowid
-
-        con.commit()
-        con.close()
-
-        price = (
-            WEEKLY_PRICE
-            if plan == "weekly"
-            else MONTHLY_PRICE
-        )
-
-        await update.message.reply_text(
-            f"""💎 <b>PREMIUM REQUEST RECEIVED</b>
-
-🆔 Request:
-<code>#{req_id}</code>
-
-📦 Plan:
-<b>{plan.title()}</b>
-
-💰 Amount:
-<b>৳{price}</b>
-
-📱 Payment:
-<b>{payment_method.upper()}</b>
-
-🔐 Transaction:
-<code>{text}</code>
-
-⏳ Admin verification চলছে।
-
-Approve হলে Premium automatically active হবে।""",
-            parse_mode=ParseMode.HTML
-        )
-
-        # ----------------------------------------------------
-        # ADMIN NOTIFICATION WITH BUTTONS
-        # ----------------------------------------------------
-
-        try:
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"""💎 <b>NEW PREMIUM REQUEST</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-🆔 Request:
-<code>#{req_id}</code>
-
-👤 User:
-<code>{uid}</code>
-
-👤 Name:
-{update.effective_user.first_name or "Unknown"}
-
-🔗 Username:
-@{update.effective_user.username or "none"}
-
-📦 Plan:
-<b>{plan.title()}</b>
-
-💰 Price:
-<b>৳{price}</b>
-
-📱 Payment:
-<b>{payment_method.upper()}</b>
-
-🔐 Transaction ID:
-<code>{text}</code>
-
-📅 Submitted:
-{datetime.now().strftime("%Y-%m-%d %H:%M")}
-
-━━━━━━━━━━━━━━━━━━━━
-
-👇 Admin action:""",
-                parse_mode=ParseMode.HTML,
-                reply_markup=admin_premium_request_keyboard(
-                    req_id
+        if tool in UTILITY_TOOLS:
+            if tool == "uuid":
+                await safe_edit(
+                    query,
+                    f"🆔 <b>UUID</b>\n\n"
+                    f"<code>{uuid.uuid4()}</code>",
+                    back_keyboard("main"),
                 )
+                return
+
+            if tool == "password":
+                result = password_generator(16)
+
+                await safe_edit(
+                    query,
+                    "🔑 <b>Password Generated</b>\n\n"
+                    f"<code>{result}</code>",
+                    back_keyboard("main"),
+                )
+                return
+
+            context.user_data[
+                "utility_tool"
+            ] = tool
+
+            prompts = {
+                "calculator": (
+                    "🧮 Example:\n"
+                    "<code>(25+5)*2</code>"
+                ),
+                "unit": (
+                    "📏 Example:\n"
+                    "<code>10 km to mile</code>"
+                ),
+                "date_calc": (
+                    "📅 Example:\n"
+                    "<code>2026-09-22 + 30</code>"
+                ),
+                "random": (
+                    "🎲 Example:\n"
+                    "<code>1-100</code>\n"
+                    "অথবা\n"
+                    "<code>Apple, Banana, Mango</code>"
+                ),
+                "qr": "🔳 QR-এ যেটা রাখতে চান পাঠান।",
+            }
+
+            await safe_edit(
+                query,
+                prompts.get(
+                    tool,
+                    "Input পাঠান।",
+                ),
+                back_keyboard("main"),
             )
 
-        except Exception:
-            pass
-
-        return
-
-    # --------------------------------------------------------
-    # PASSWORD
-    # --------------------------------------------------------
-
-    if context.user_data.get(
-        "waiting_password"
-    ):
-
-        context.user_data[
-            "custom_password"
-        ] = text
-
-        context.user_data[
-            "waiting_password"
-        ] = False
-
-        await update.message.reply_text(
-            "🔐 Password saved. Now send the PDF."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # WATERMARK
-    # --------------------------------------------------------
-
-    if context.user_data.get(
-        "waiting_watermark"
-    ):
-
-        context.user_data[
-            "watermark"
-        ] = text
-
-        context.user_data[
-            "waiting_watermark"
-        ] = False
-
-        await update.message.reply_text(
-            "💧 Watermark saved. Now send the PDF."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # RESIZE
-    # --------------------------------------------------------
-
-    if context.user_data.get(
-        "waiting_resize"
-    ):
-
-        context.user_data[
-            "resize"
-        ] = text
-
-        context.user_data[
-            "waiting_resize"
-        ] = False
-
-        await update.message.reply_text(
-            "📐 Resize settings saved. "
-            "Now send the image."
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # PAGE RANGE
-    # --------------------------------------------------------
-
-    if context.user_data.get(
-        "waiting_pages"
-    ):
-
-        m = re.match(
-            r"^\s*(\d+)\s*(?:-\s*(\d+))?\s*$",
-            text
-        )
-
-        if not m:
-            await update.message.reply_text(
-                "❌ Use format: <code>1-5</code>",
-                parse_mode=ParseMode.HTML
-            )
             return
 
-        start_page = int(
-            m.group(1)
-        )
+        if tool in PDF_TOOLS:
+            context.user_data[
+                "selected_tool"
+            ] = tool
 
-        end_page = int(
-            m.group(2)
-            or m.group(1)
-        )
+            prompts = {
+                "pdf_merge": (
+                    "🔗 <b>PDF Merge</b>\n\n"
+                    "একাধিক PDF একে একে পাঠান।\n"
+                    "সবশেষে /done লিখুন।"
+                ),
+                "pdf_split": (
+                    "✂️ <b>PDF Split</b>\n\n"
+                    "প্রথমে PDF পাঠান।\n"
+                    "তারপর Page Number পাঠান।"
+                ),
+                "pdf_extract": (
+                    "📑 <b>Page Extract</b>\n\n"
+                    "PDF পাঠান।\n"
+                    "তারপর লিখুন:\n"
+                    "<code>1-5</code>"
+                ),
+                "pdf_rotate": (
+                    "🔄 <b>Rotate PDF</b>\n\n"
+                    "PDF পাঠানোর পরে angle লিখুন:\n"
+                    "<code>90</code>"
+                ),
+                "pdf_resize": (
+                    "📐 <b>Page Size</b>\n\n"
+                    "PDF পাঠান।\n"
+                    "তারপর লিখুন:\n"
+                    "<code>A4</code>\n"
+                    "অথবা A5 / LETTER / LEGAL"
+                ),
+                "pdf_watermark": (
+                    "💧 PDF পাঠান।\n"
+                    "তারপর Watermark Text পাঠান।"
+                ),
+                "pdf_protect": (
+                    "🔐 PDF পাঠান।\n"
+                    "তারপর Password পাঠান।"
+                ),
+                "pdf_unlock": (
+                    "🔓 Password-protected PDF পাঠান।\n"
+                    "তারপর Password পাঠান।"
+                ),
+                "pdf_xps": (
+                    "📦 PDF পাঠান।\n"
+                    "Server-এ Ghostscript থাকলে XPS তৈরি হবে।"
+                ),
+            }
 
-        context.user_data[
-            "page_range"
-        ] = (
-            start_page,
-            end_page
-        )
+            await safe_edit(
+                query,
+                prompts.get(
+                    tool,
+                    f"📕 <b>{PDF_TOOLS[tool]}</b>\n\n"
+                    "PDF file পাঠান।",
+                ),
+                back_keyboard("main"),
+            )
 
-        context.user_data[
-            "waiting_pages"
-        ] = False
+            return
 
-        await update.message.reply_text(
-            f"📑 Pages <b>{start_page}-{end_page}</b> selected.\n\n"
-            "📤 Now send the PDF.",
-            parse_mode=ParseMode.HTML
-        )
+        if tool in IMAGE_TOOLS:
+            context.user_data[
+                "selected_tool"
+            ] = tool
 
-        return
+            prompts = {
+                "img_resize": (
+                    "📏 Image পাঠান।\n"
+                    "তারপর লিখুন:\n"
+                    "<code>800</code>\n"
+                    "অথবা <code>800x600</code>"
+                ),
+                "img_crop": (
+                    "✂️ Image পাঠান।\n"
+                    "তারপর লিখুন:\n"
+                    "<code>x,y,width,height</code>"
+                ),
+                "img_watermark": (
+                    "💧 Image পাঠান।\n"
+                    "তারপর Watermark Text পাঠান।"
+                ),
+                "img_rotate": (
+                    "🔄 Image পাঠান।\n"
+                    "তারপর angle পাঠান।\n"
+                    "Example: <code>90</code>"
+                ),
+                "img_multi_pdf": (
+                    "📚 একাধিক Image পাঠান।\n"
+                    "সবশেষে /doneimages লিখুন।"
+                ),
+            }
 
-    # --------------------------------------------------------
-    # MAIN MENU BUTTONS
-    # --------------------------------------------------------
+            await safe_edit(
+                query,
+                prompts.get(
+                    tool,
+                    f"🖼️ <b>{IMAGE_TOOLS[tool]}</b>\n\n"
+                    "Image পাঠান।",
+                ),
+                back_keyboard("main"),
+            )
 
-    if text == tr(uid, "pdf"):
-        await show_pdf_menu(update)
-        return
-
-    if text == tr(uid, "image"):
-        await show_image_menu(update)
-        return
-
-    if text == tr(uid, "premium"):
-        await premium(
-            update,
-            context
-        )
-        return
-
-    if text == tr(uid, "account"):
-        await account(
-            update,
-            context
-        )
-        return
-
-    if text == tr(uid, "bonus"):
-        await bonus(
-            update,
-            context
-        )
-        return
-
-    if text == tr(uid, "refer"):
-        await refer(
-            update,
-            context
-        )
-        return
-
-    if text == tr(uid, "redeem"):
-        await redeem(
-            update,
-            context
-        )
-        return
-
-    if text == tr(uid, "history"):
-        await history_cmd(
-            update,
-            context
-        )
-        return
-
-    if text == tr(uid, "support"):
-        await support(
-            update,
-            context
-        )
-        return
-
-    if text == tr(uid, "settings"):
-        await settings(
-            update,
-            context
-        )
-        return
-
-    await update.message.reply_text(
-        "🤖 <b>COMMAND NOT RECOGNIZED</b>\n\n"
-        "Use the buttons below.",
-        reply_markup=main_keyboard(uid),
-        parse_mode=ParseMode.HTML
-    )
+            return
 
 
 # ============================================================
 # DOCUMENT HANDLER
 # ============================================================
 
-async def document_handler(
-    update,
-    context
-):
+async def document_handler(update, context):
     uid = update.effective_user.id
 
     if is_banned(uid):
-        await update.message.reply_text(
-            tr(
-                uid,
-                "banned"
-            )
-        )
         return
-
-    doc = update.message.document
-
-    if not doc:
-        return
-
-    filename = (
-        doc.file_name
-        or "file"
-    )
-
-    # --------------------------------------------------------
-    # MERGE MODE
-    # --------------------------------------------------------
-
-    if context.user_data.get(
-        "merge_mode"
-    ):
-
-        if not filename.lower().endswith(
-            ".pdf"
-        ):
-            await update.message.reply_text(
-                "❌ Merge mode accepts PDF files only."
-            )
-            return
-
-        file = await doc.get_file()
-
-        data = await file.download_as_bytearray()
-
-        context.user_data[
-            "merge_files"
-        ].append(
-            bytes(data)
-        )
-
-        count = len(
-            context.user_data[
-                "merge_files"
-            ]
-        )
-
-        await update.message.reply_text(
-            f"📎 PDF #{count} added.\n\n"
-            "Send more PDFs or /done",
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # SIZE
-    # --------------------------------------------------------
-
-    size = doc.file_size or 0
-
-    if not check_file_size(
-        uid,
-        size
-    ):
-
-        await update.message.reply_text(
-            f"📦 File too large.\n\n"
-            f"Your limit: "
-            f"{max_file_mb(uid)} MB"
-        )
-
-        return
-
-    # --------------------------------------------------------
-    # TOOL
-    # --------------------------------------------------------
 
     tool = context.user_data.get(
         "selected_tool"
     )
 
     if not tool:
-
         await update.message.reply_text(
-            "📕 Please select a PDF/Image tool first."
-        )
-
-        return
-
-    cost = TOOL_COST.get(
-        tool,
-        1
-    )
-
-    # Premium users don't consume credits
-    if (
-        not is_premium(uid)
-        and get_user(uid)["credits"] < cost
-    ):
-        await update.message.reply_text(
-            tr(
-                uid,
-                "no_credit"
-            )
+            "ℹ️ আগে PDF Tools অথবা Image Tools থেকে একটি Tool নির্বাচন করুন।"
         )
         return
 
-    status = await update.message.reply_text(
-        progress_text(
-            10,
-            filename
-        ),
-        parse_mode=ParseMode.HTML
+    document = update.message.document
+
+    file_size = document.file_size or 0
+
+    premium = is_premium(uid)
+
+    allowed, limit = check_file_size(
+        file_size,
+        premium,
     )
 
-    job_id = create_job(
-        uid,
-        tool,
-        filename
-    )
+    if not allowed:
+        await update.message.reply_text(
+            "❌ <b>FILE TOO LARGE</b>\n\n"
+            f"আপনার Limit: <b>{limit} MB</b>\n"
+            "💎 Premium নিলে বেশি Limit পাওয়া যাবে।",
+            parse_mode=ParseMode.HTML,
+        )
+        return
 
     try:
-
-        file = await doc.get_file()
-
-        await status.edit_text(
-            progress_text(
-                20,
-                filename
-            ),
-            parse_mode=ParseMode.HTML
-        )
-
-        raw = bytes(
-            await file.download_as_bytearray()
-        )
-
-        await status.edit_text(
-            progress_text(
-                30,
-                filename
-            ),
-            parse_mode=ParseMode.HTML
-        )
-
-        await asyncio.sleep(
-            0.25
-        )
-
-        if tool == "PDF → Word":
-            result, out_name = pdf_to_word(raw)
-
-        elif tool == "PDF → TXT":
-            result, out_name = pdf_to_txt(raw)
-
-        elif tool == "PDF → JPG":
-            result, out_name = pdf_to_images_zip(
-                raw,
-                "jpg"
-            )
-
-        elif tool == "PDF → PNG":
-            result, out_name = pdf_to_images_zip(
-                raw,
-                "png"
-            )
-
-        elif tool == "Compress PDF":
-            result, out_name = compress_pdf(raw)
-
-        elif tool == "Split PDF":
-            result, out_name = split_pdf(raw)
-
-        elif tool == "Extract Pages":
-
-            start_page, end_page = (
-                context.user_data.get(
-                    "page_range",
-                    (1, 1)
-                )
-            )
-
-            result, out_name = extract_pages(
-                raw,
-                start_page,
-                end_page
-            )
-
-        elif tool == "Rotate PDF":
-            result, out_name = rotate_pdf(raw)
-
-        elif tool == "PDF Page Size":
-            result, out_name = resize_pdf_page(
-                raw,
-                "A4"
-            )
-
-        elif tool == "Add Page Numbers":
-            result, out_name = add_page_numbers(raw)
-
-        elif tool == "Add Watermark":
-
-            watermark = context.user_data.get(
-                "watermark",
-                "RAFIM PDF PRO"
-            )
-
-            result, out_name = add_watermark(
-                raw,
-                watermark
-            )
-
-        elif tool == "Remove Metadata":
-            result, out_name = remove_metadata(raw)
-
-        elif tool == "PDF Info":
-
-            info = pdf_info(raw)
-
-            await status.edit_text(
-                progress_text(
-                    100,
-                    filename
-                ),
-                parse_mode=ParseMode.HTML
-            )
-
-            await update.message.reply_text(
-                info
-            )
-
-            finish_job(
-                job_id,
-                "success"
-            )
-
-            log_history(
-                uid,
-                tool,
-                "success",
-                filename,
-                0
-            )
-
-            return
-
-        elif tool == "Protect PDF":
-
-            password = context.user_data.get(
-                "custom_password",
-                "123456"
-            )
-
-            result, out_name = protect_pdf(
-                raw,
-                password
-            )
-
-        elif tool == "Unlock PDF":
-
-            password = context.user_data.get(
-                "custom_password",
-                ""
-            )
-
-            if not password:
-                raise ValueError(
-                    "Send the PDF password first."
-                )
-
-            result, out_name = unlock_pdf(
-                raw,
-                password
-            )
-
-        elif tool == "PDF → XPS":
-
-            result, out_name = pdf_to_xps(
-                raw
-            )
-
-        elif tool in [
-            "JPG → PDF",
-            "PNG → PDF"
-        ]:
-
-            result, out_name = image_to_pdf(
-                raw
-            )
-
-        else:
-
-            result, out_name = process_image(
-                raw,
-                tool
-            )
-
-        await status.edit_text(
-            progress_text(
-                100,
-                filename
-            ),
-            parse_mode=ParseMode.HTML
-        )
-
-        if not is_premium(uid):
-
-            remove_credits(
-                uid,
-                cost,
-                f"Used {tool}"
-            )
-
-        add_xp(
-            uid,
-            XP_SUCCESS
-        )
-
-        log_history(
-            uid,
-            tool,
-            "success",
-            filename,
-            cost
-        )
-
-        finish_job(
-            job_id,
-            "success"
-        )
-
-        await asyncio.sleep(
-            0.3
-        )
-
-        await status.edit_text(
-            f"""🎉 <b>PROCESSING COMPLETE!</b>
-
-━━━━━━━━━━━━━━━━━━━━
-📄 <b>Input:</b> {filename[:40]}
-📦 <b>Output:</b> {out_name}
-💳 <b>Cost:</b> {cost} Credits
-⭐ <b>XP:</b> +{XP_SUCCESS}
-━━━━━━━━━━━━━━━━━━━━
-
-🔥 Your file is ready!
-📥 Sending output now...""",
-            parse_mode=ParseMode.HTML
-        )
-
-        await send_result(
+        data = await download_document(
             update,
-            result,
-            out_name
+            context,
         )
+
+        if not data:
+            raise ValueError(
+                "File download failed."
+            )
+
+        if tool.startswith("pdf_"):
+            if not document.file_name.lower().endswith(
+                ".pdf"
+            ):
+                raise ValueError(
+                    "এই Tool-এর জন্য PDF file পাঠান।"
+                )
+
+            if tool == "pdf_merge":
+                files = context.user_data.setdefault(
+                    "pdf_files",
+                    [],
+                )
+
+                files.append(data)
+
+                await update.message.reply_text(
+                    f"📥 PDF #{len(files)} received.\n\n"
+                    "আরও PDF পাঠান অথবা /done দিন।"
+                )
+
+                return
+
+            if tool in {
+                "pdf_split",
+                "pdf_extract",
+                "pdf_rotate",
+                "pdf_resize",
+                "pdf_watermark",
+                "pdf_protect",
+                "pdf_unlock",
+            }:
+                context.user_data[
+                    "pending_file"
+                ] = data
+
+                await update.message.reply_text(
+                    "✅ PDF received.\n\n"
+                    "এখন প্রয়োজনীয় Input পাঠান।"
+                )
+
+                return
+
+            await process_pdf(
+                update,
+                context,
+                tool,
+                data,
+            )
+
+        elif tool.startswith("img_"):
+            if not (
+                document.mime_type
+                and document.mime_type.startswith(
+                    "image/"
+                )
+            ):
+                raise ValueError(
+                    "এই Tool-এর জন্য Image file পাঠান।"
+                )
+
+            if tool == "img_multi_pdf":
+                files = context.user_data.setdefault(
+                    "image_files",
+                    [],
+                )
+
+                files.append(data)
+
+                await update.message.reply_text(
+                    f"📥 Image #{len(files)} received.\n\n"
+                    "আরও Image পাঠান অথবা /doneimages দিন।"
+                )
+
+                return
+
+            if tool in {
+                "img_resize",
+                "img_crop",
+                "img_watermark",
+                "img_rotate",
+            }:
+                context.user_data[
+                    "pending_file"
+                ] = data
+
+                await update.message.reply_text(
+                    "✅ Image received.\n\n"
+                    "এখন প্রয়োজনীয় Input পাঠান।"
+                )
+
+                return
+
+            await process_image(
+                update,
+                context,
+                tool,
+                data,
+            )
 
     except Exception as e:
-
-        finish_job(
-            job_id,
-            "failed"
-        )
-
-        log_history(
+        add_history(
             uid,
             tool,
-            "failed",
-            filename,
-            0
+            "ERROR",
         )
 
-        try:
-            await status.edit_text(
-                f"""🚨 <b>PROCESS INTERRUPTED</b>
-
-😵 Something didn't go as planned.
-
-🔍 Reason:
-<code>{str(e)[:500]}</code>
-
-━━━━━━━━━━━━━━━━━━━━
-💡 Your credits were NOT charged.
-
-🔄 Please try again.
-━━━━━━━━━━━━━━━━━━━━""",
-                parse_mode=ParseMode.HTML
-            )
-
-        except Exception:
-            pass
-
-    finally:
-
-        context.user_data.pop(
-            "selected_tool",
-            None
+        await update.message.reply_text(
+            "❌ <b>ERROR</b>\n\n"
+            f"<code>{str(e)[:1500]}</code>\n\n"
+            "🔄 আবার চেষ্টা করুন।",
+            parse_mode=ParseMode.HTML,
         )
 
 
@@ -4371,414 +3441,856 @@ async def document_handler(
 # PHOTO HANDLER
 # ============================================================
 
-async def photo_handler(
-    update,
-    context
-):
+async def photo_handler(update, context):
     uid = update.effective_user.id
 
     if is_banned(uid):
         return
-
-    photo = update.message.photo[-1]
 
     tool = context.user_data.get(
         "selected_tool"
     )
 
     if not tool:
-
         await update.message.reply_text(
-            "🖼️ Select an Image Tool first."
+            "ℹ️ আগে Image Tools থেকে একটি Tool নির্বাচন করুন।"
         )
-
         return
 
-    cost = TOOL_COST.get(
-        tool,
-        1
-    )
-
-    u = get_user(uid)
-
-    if (
-        not is_premium(uid)
-        and u["credits"] < cost
-    ):
-
+    if not tool.startswith("img_"):
         await update.message.reply_text(
-            tr(
-                uid,
-                "no_credit"
-            )
+            "ℹ️ Image Tools থেকে একটি Image Tool নির্বাচন করুন।"
         )
-
         return
-
-    status = await update.message.reply_text(
-        progress_text(
-            10,
-            "image.jpg"
-        ),
-        parse_mode=ParseMode.HTML
-    )
-
-    job_id = create_job(
-        uid,
-        tool,
-        "image.jpg"
-    )
 
     try:
-
-        file = await photo.get_file()
-
-        await status.edit_text(
-            progress_text(
-                20,
-                "image.jpg"
-            ),
-            parse_mode=ParseMode.HTML
+        data = await download_photo(
+            update,
+            context,
         )
 
-        raw = bytes(
-            await file.download_as_bytearray()
-        )
-
-        await status.edit_text(
-            progress_text(
-                30,
-                "image.jpg"
-            ),
-            parse_mode=ParseMode.HTML
-        )
-
-        if tool in [
-            "JPG → PDF",
-            "PNG → PDF"
-        ]:
-
-            result, filename = image_to_pdf(
-                raw
+        if tool == "img_multi_pdf":
+            files = context.user_data.setdefault(
+                "image_files",
+                [],
             )
 
-        elif tool == "Multiple Images → PDF":
+            files.append(data)
 
-            context.user_data.setdefault(
-                "image_batch",
-                []
-            )
-
-            context.user_data[
-                "image_batch"
-            ].append(raw)
-
-            await status.edit_text(
-                "📚 <b>IMAGE BATCH MODE</b>\n\n"
-                f"🖼️ Images collected: "
-                f"{len(context.user_data['image_batch'])}\n\n"
-                "Send more images or /doneimages",
-                parse_mode=ParseMode.HTML
-            )
-
-            finish_job(
-                job_id,
-                "waiting"
+            await update.message.reply_text(
+                f"📥 Image #{len(files)} received.\n\n"
+                "আরও Image পাঠান অথবা /doneimages দিন।"
             )
 
             return
 
-        else:
+        if tool in {
+            "img_resize",
+            "img_crop",
+            "img_watermark",
+            "img_rotate",
+        }:
+            context.user_data[
+                "pending_file"
+            ] = data
 
-            result, filename = process_image(
-                raw,
-                tool
+            await update.message.reply_text(
+                "✅ Image received.\n\n"
+                "এখন প্রয়োজনীয় Input পাঠান।"
             )
 
-        await status.edit_text(
-            progress_text(
-                100,
-                "image.jpg"
-            ),
-            parse_mode=ParseMode.HTML
-        )
+            return
 
-        if not is_premium(uid):
-
-            remove_credits(
-                uid,
-                cost,
-                f"Used {tool}"
-            )
-
-        add_xp(
-            uid,
-            XP_SUCCESS
-        )
-
-        log_history(
-            uid,
-            tool,
-            "success",
-            "image.jpg",
-            cost
-        )
-
-        finish_job(
-            job_id,
-            "success"
-        )
-
-        await send_result(
+        await process_image(
             update,
-            result,
-            filename
+            context,
+            tool,
+            data,
         )
 
     except Exception as e:
-
-        finish_job(
-            job_id,
-            "failed"
-        )
-
-        log_history(
-            uid,
-            tool,
-            "failed",
-            "image.jpg",
-            0
-        )
-
-        await status.edit_text(
-            f"""🚨 <b>IMAGE PROCESSING FAILED</b>
-
-❌ {str(e)[:400]}
-
-💳 Your credits were not charged.""",
-            parse_mode=ParseMode.HTML
+        await update.message.reply_text(
+            "❌ <b>ERROR</b>\n\n"
+            f"<code>{str(e)[:1200]}</code>",
+            parse_mode=ParseMode.HTML,
         )
 
 
 # ============================================================
-# MERGE DONE
+# PDF PROCESS
 # ============================================================
 
-async def done_command(
+async def process_pdf(
     update,
-    context
+    context,
+    tool,
+    data,
 ):
     uid = update.effective_user.id
 
-    files = context.user_data.get(
-        "merge_files",
-        []
+    title = PDF_TOOLS.get(
+        tool,
+        "PDF Tool",
     )
 
-    if len(files) < 2:
-
-        await update.message.reply_text(
-            "❌ Please send at least 2 PDF files."
-        )
-
-        return
-
-    cost = TOOL_COST[
-        "Merge PDF"
-    ]
-
-    if (
-        not is_premium(uid)
-        and get_user(uid)["credits"] < cost
-    ):
-
-        await update.message.reply_text(
-            tr(
-                uid,
-                "no_credit"
-            )
-        )
-
-        return
-
-    status = await update.message.reply_text(
-        progress_text(
-            10,
-            "merging PDFs"
-        ),
-        parse_mode=ParseMode.HTML
+    progress = await create_progress(
+        update.message,
+        title,
     )
 
     try:
-
-        await status.edit_text(
-            progress_text(
-                40,
-                "merging PDFs"
-            ),
-            parse_mode=ParseMode.HTML
+        await progress_before(
+            progress,
+            title,
         )
 
-        result, filename = merge_pdfs(
-            files
-        )
+        if tool == "pdf_word":
+            result = await asyncio.to_thread(
+                pdf_to_word,
+                data,
+            )
+            filename = "converted.docx"
 
-        await status.edit_text(
-            progress_text(
-                100,
-                "merged.pdf"
-            ),
-            parse_mode=ParseMode.HTML
-        )
+        elif tool == "pdf_text":
+            result = await asyncio.to_thread(
+                pdf_to_text,
+                data,
+            )
+            filename = "converted.txt"
 
-        if not is_premium(uid):
+        elif tool == "pdf_images":
+            result = await asyncio.to_thread(
+                pdf_to_images_zip,
+                data,
+                "png",
+            )
+            filename = "pdf_images.zip"
 
-            remove_credits(
-                uid,
-                cost,
-                "Merge PDF"
+        elif tool == "pdf_compress":
+            result = await asyncio.to_thread(
+                compress_pdf,
+                data,
+            )
+            filename = "compressed.pdf"
+
+        elif tool == "pdf_rotate":
+            angle = context.user_data.pop(
+                "pending_input",
+                90,
             )
 
-        add_xp(
-            uid,
-            XP_SUCCESS
-        )
+            result = await asyncio.to_thread(
+                rotate_pdf,
+                data,
+                int(angle),
+            )
 
-        log_history(
-            uid,
-            "Merge PDF",
-            "success",
-            filename,
-            cost
+            filename = "rotated.pdf"
+
+        elif tool == "pdf_resize":
+            size = context.user_data.pop(
+                "pending_input",
+                "A4",
+            )
+
+            result = await asyncio.to_thread(
+                resize_pdf,
+                data,
+                size,
+            )
+
+            filename = "resized.pdf"
+
+        elif tool == "pdf_numbers":
+            result = await asyncio.to_thread(
+                add_page_numbers,
+                data,
+            )
+            filename = "page_numbers.pdf"
+
+        elif tool == "pdf_watermark":
+            text = context.user_data.pop(
+                "pending_input",
+                "Rafim Tools",
+            )
+
+            result = await asyncio.to_thread(
+                watermark_pdf,
+                data,
+                text,
+            )
+
+            filename = "watermarked.pdf"
+
+        elif tool == "pdf_metadata":
+            result = await asyncio.to_thread(
+                remove_pdf_metadata,
+                data,
+            )
+            filename = "clean_metadata.pdf"
+
+        elif tool == "pdf_info":
+            info = await asyncio.to_thread(
+                pdf_info,
+                data,
+            )
+
+            await progress_after(
+                progress,
+                title,
+            )
+
+            await progress.edit_text(
+                info,
+                parse_mode=ParseMode.HTML,
+            )
+
+            add_history(
+                uid,
+                title,
+            )
+
+            add_xp(uid)
+
+            return
+
+        elif tool == "pdf_protect":
+            password = context.user_data.pop(
+                "pending_input",
+                "",
+            )
+
+            if not password:
+                raise ValueError(
+                    "Password required."
+                )
+
+            result = await asyncio.to_thread(
+                protect_pdf,
+                data,
+                password,
+            )
+
+            filename = "protected.pdf"
+
+        elif tool == "pdf_unlock":
+            password = context.user_data.pop(
+                "pending_input",
+                "",
+            )
+
+            if not password:
+                raise ValueError(
+                    "Password required."
+                )
+
+            result = await asyncio.to_thread(
+                unlock_pdf,
+                data,
+                password,
+            )
+
+            filename = "unlocked.pdf"
+
+        elif tool == "pdf_xps":
+            result = await asyncio.to_thread(
+                pdf_to_xps,
+                data,
+            )
+
+            filename = "converted.xps"
+
+        else:
+            raise ValueError(
+                "Unknown PDF Tool."
+            )
+
+        await progress_after(
+            progress,
+            title,
         )
 
         await send_result(
-            update,
+            update.message,
             result,
-            filename
+            filename,
+            f"✅ {title} SUCCESS",
         )
 
-    except Exception as e:
+        add_history(
+            uid,
+            title,
+        )
 
-        await status.edit_text(
-            f"🚨 Merge failed:\n"
-            f"<code>{str(e)[:400]}</code>",
-            parse_mode=ParseMode.HTML
+        add_xp(uid)
+
+    except Exception as e:
+        await progress.edit_text(
+            "❌ <b>ERROR</b>\n\n"
+            f"<code>{str(e)[:1800]}</code>\n\n"
+            "🔄 Retry করে আবার চেষ্টা করুন।",
+            parse_mode=ParseMode.HTML,
+        )
+
+        add_history(
+            uid,
+            title,
+            "ERROR",
         )
 
     finally:
-
         context.user_data.pop(
-            "merge_mode",
-            None
-        )
-
-        context.user_data.pop(
-            "merge_files",
-            None
+            "pending_file",
+            None,
         )
 
 
-async def done_images(
+# ============================================================
+# IMAGE PROCESS
+# ============================================================
+
+async def process_image(
     update,
-    context
+    context,
+    tool,
+    data,
 ):
     uid = update.effective_user.id
 
+    title = IMAGE_TOOLS.get(
+        tool,
+        "Image Tool",
+    )
+
+    progress = await create_progress(
+        update.message,
+        title,
+    )
+
+    try:
+        await progress_before(
+            progress,
+            title,
+        )
+
+        if tool == "img_compress":
+            result = await asyncio.to_thread(
+                compress_image,
+                data,
+            )
+            filename = "compressed.jpg"
+
+        elif tool == "img_resize":
+            value = context.user_data.pop(
+                "pending_input",
+                "1000",
+            )
+
+            if "x" in str(value).lower():
+                w, h = re.split(
+                    r"x",
+                    str(value),
+                    maxsplit=1,
+                    flags=re.IGNORECASE,
+                )
+
+                result = await asyncio.to_thread(
+                    resize_image,
+                    data,
+                    int(w),
+                    int(h),
+                )
+            else:
+                result = await asyncio.to_thread(
+                    resize_image,
+                    data,
+                    int(value),
+                )
+
+            filename = "resized.png"
+
+        elif tool == "img_crop":
+            values = context.user_data.pop(
+                "pending_input",
+                "",
+            ).split(",")
+
+            if len(values) != 4:
+                raise ValueError(
+                    "Format: x,y,width,height"
+                )
+
+            result = await asyncio.to_thread(
+                crop_image,
+                data,
+                *map(int, values),
+            )
+
+            filename = "cropped.png"
+
+        elif tool == "img_jpg":
+            result = await asyncio.to_thread(
+                convert_image,
+                data,
+                "JPG",
+            )
+            filename = "converted.jpg"
+
+        elif tool == "img_png":
+            result = await asyncio.to_thread(
+                convert_image,
+                data,
+                "PNG",
+            )
+            filename = "converted.png"
+
+        elif tool == "img_webp":
+            result = await asyncio.to_thread(
+                convert_image,
+                data,
+                "WEBP",
+            )
+            filename = "converted.webp"
+
+        elif tool == "img_pdf":
+            result = await asyncio.to_thread(
+                image_to_pdf,
+                data,
+            )
+            filename = "image.pdf"
+
+        elif tool == "img_watermark":
+            text = context.user_data.pop(
+                "pending_input",
+                "Rafim Tools",
+            )
+
+            result = await asyncio.to_thread(
+                image_watermark,
+                data,
+                text,
+            )
+
+            filename = "watermarked.png"
+
+        elif tool == "img_enhance":
+            result = await asyncio.to_thread(
+                enhance_image,
+                data,
+            )
+            filename = "enhanced.png"
+
+        elif tool == "img_gray":
+            result = await asyncio.to_thread(
+                grayscale_image,
+                data,
+            )
+            filename = "grayscale.png"
+
+        elif tool == "img_rotate":
+            angle = context.user_data.pop(
+                "pending_input",
+                90,
+            )
+
+            result = await asyncio.to_thread(
+                rotate_image,
+                data,
+                int(angle),
+            )
+
+            filename = "rotated.png"
+
+        elif tool == "img_flip":
+            result = await asyncio.to_thread(
+                flip_image,
+                data,
+            )
+            filename = "flipped.png"
+
+        else:
+            raise ValueError(
+                "Unknown Image Tool."
+            )
+
+        await progress_after(
+            progress,
+            title,
+        )
+
+        await send_result(
+            update.message,
+            result,
+            filename,
+            f"✅ {title} SUCCESS",
+        )
+
+        add_history(
+            uid,
+            title,
+        )
+
+        add_xp(uid)
+
+    except Exception as e:
+        await progress.edit_text(
+            "❌ <b>ERROR</b>\n\n"
+            f"<code>{str(e)[:1500]}</code>\n\n"
+            "🔄 Retry করে আবার চেষ্টা করুন।",
+            parse_mode=ParseMode.HTML,
+        )
+
+        add_history(
+            uid,
+            title,
+            "ERROR",
+        )
+
+    finally:
+        context.user_data.pop(
+            "pending_file",
+            None,
+        )
+
+
+# ============================================================
+# /DONE
+# ============================================================
+
+async def done_command(update, context):
+    uid = update.effective_user.id
+
     files = context.user_data.get(
-        "image_batch",
-        []
+        "pdf_files",
+        [],
     )
 
     if not files:
-
         await update.message.reply_text(
-            "❌ No images collected."
+            "❌ কোনো PDF জমা হয়নি।"
         )
-
         return
 
-    result, filename = (
-        multiple_images_to_pdf(
-            files
-        )
+    progress = await create_progress(
+        update.message,
+        "📕 PDF Merge",
     )
 
-    cost = TOOL_COST[
-        "Multiple Images → PDF"
-    ]
+    try:
+        await progress_before(
+            progress,
+            "📕 PDF Merge",
+        )
 
-    if not is_premium(uid):
+        result = await asyncio.to_thread(
+            merge_pdfs,
+            files,
+        )
 
-        if get_user(uid)["credits"] < cost:
+        await progress_after(
+            progress,
+            "📕 PDF Merge",
+        )
 
-            await update.message.reply_text(
-                tr(
-                    uid,
-                    "no_credit"
-                )
-            )
+        await send_result(
+            update.message,
+            result,
+            "merged.pdf",
+            "✅ PDF Merge SUCCESS",
+        )
 
-            return
-
-        remove_credits(
+        add_history(
             uid,
-            cost,
-            "Multiple Images PDF"
+            "PDF Merge",
         )
 
-    add_xp(
-        uid,
-        XP_SUCCESS
+        add_xp(uid)
+
+    except Exception as e:
+        await progress.edit_text(
+            "❌ <b>ERROR</b>\n\n"
+            f"<code>{str(e)[:1200]}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    finally:
+        context.user_data.pop(
+            "pdf_files",
+            None,
+        )
+
+
+async def done_images(update, context):
+    uid = update.effective_user.id
+
+    files = context.user_data.get(
+        "image_files",
+        [],
     )
 
-    log_history(
-        uid,
-        "Multiple Images → PDF",
-        "success",
-        filename,
-        cost
+    if not files:
+        await update.message.reply_text(
+            "❌ কোনো Image জমা হয়নি।"
+        )
+        return
+
+    progress = await create_progress(
+        update.message,
+        "📚 Images → PDF",
     )
 
-    await update.message.reply_text(
-        "🎉 <b>IMAGE BATCH COMPLETE!</b>",
-        parse_mode=ParseMode.HTML
-    )
+    try:
+        await progress_before(
+            progress,
+            "📚 Images → PDF",
+        )
 
-    await send_result(
-        update,
-        result,
-        filename
-    )
+        result = await asyncio.to_thread(
+            images_to_pdf,
+            files,
+        )
 
-    context.user_data.pop(
-        "image_batch",
-        None
-    )
+        await progress_after(
+            progress,
+            "📚 Images → PDF",
+        )
+
+        await send_result(
+            update.message,
+            result,
+            "images.pdf",
+            "✅ Images → PDF SUCCESS",
+        )
+
+        add_history(
+            uid,
+            "Images → PDF",
+        )
+
+        add_xp(uid)
+
+    except Exception as e:
+        await progress.edit_text(
+            "❌ <b>ERROR</b>\n\n"
+            f"<code>{str(e)[:1200]}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    finally:
+        context.user_data.pop(
+            "image_files",
+            None,
+        )
 
 
 # ============================================================
-# ADMIN HELPERS
+# PENDING INPUT HANDLER
+# ============================================================
+
+async def pending_input_handler(
+    update,
+    context,
+):
+    if not update.message.text:
+        return False
+
+    if (
+        "pending_file"
+        not in context.user_data
+    ):
+        return False
+
+    tool = context.user_data.get(
+        "selected_tool"
+    )
+
+    if not tool:
+        return False
+
+    text = update.message.text.strip()
+
+    if tool == "pdf_split":
+        try:
+            page = int(text)
+        except Exception:
+            await update.message.reply_text(
+                "❌ Page Number দিন। Example: <code>2</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return True
+
+        data = context.user_data.pop(
+            "pending_file"
+        )
+
+        progress = await create_progress(
+            update.message,
+            "✂️ PDF Split",
+        )
+
+        try:
+            await progress_before(
+                progress,
+                "✂️ PDF Split",
+            )
+
+            result = await asyncio.to_thread(
+                split_pdf,
+                data,
+                page,
+            )
+
+            await progress_after(
+                progress,
+                "✂️ PDF Split",
+            )
+
+            await send_result(
+                update.message,
+                result,
+                "split.pdf",
+                "✅ PDF Split SUCCESS",
+            )
+
+            add_history(
+                update.effective_user.id,
+                "PDF Split",
+            )
+            add_xp(
+                update.effective_user.id
+            )
+
+        except Exception as e:
+            await progress.edit_text(
+                "❌ <b>ERROR</b>\n\n"
+                f"<code>{str(e)[:1200]}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+
+        return True
+
+    if tool == "pdf_extract":
+        m = re.match(
+            r"^(\d+)\s*-\s*(\d+)$",
+            text,
+        )
+
+        if not m:
+            await update.message.reply_text(
+                "❌ Format: <code>1-5</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return True
+
+        start_page = int(m.group(1))
+        end_page = int(m.group(2))
+
+        data = context.user_data.pop(
+            "pending_file"
+        )
+
+        progress = await create_progress(
+            update.message,
+            "📑 Page Extract",
+        )
+
+        try:
+            await progress_before(
+                progress,
+                "📑 Page Extract",
+            )
+
+            result = await asyncio.to_thread(
+                extract_pdf_pages,
+                data,
+                start_page,
+                end_page,
+            )
+
+            await progress_after(
+                progress,
+                "📑 Page Extract",
+            )
+
+            await send_result(
+                update.message,
+                result,
+                "extracted.pdf",
+                "✅ Page Extract SUCCESS",
+            )
+
+            add_history(
+                update.effective_user.id,
+                "PDF Page Extract",
+            )
+            add_xp(
+                update.effective_user.id
+            )
+
+        except Exception as e:
+            await progress.edit_text(
+                "❌ <b>ERROR</b>\n\n"
+                f"<code>{str(e)[:1200]}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+
+        return True
+
+    if tool in {
+        "pdf_rotate",
+        "pdf_resize",
+        "pdf_watermark",
+        "pdf_protect",
+        "pdf_unlock",
+        "img_resize",
+        "img_crop",
+        "img_watermark",
+        "img_rotate",
+    }:
+        data = context.user_data.pop(
+            "pending_file"
+        )
+
+        context.user_data[
+            "pending_input"
+        ] = text
+
+        if tool.startswith("pdf_"):
+            await process_pdf(
+                update,
+                context,
+                tool,
+                data,
+            )
+        else:
+            await process_image(
+                update,
+                context,
+                tool,
+                data,
+            )
+
+        return True
+
+    return False
+
+
+# ============================================================
+# ADMIN DECORATOR
 # ============================================================
 
 def admin_only(func):
-
-    async def wrapper(
-        update,
-        context
-    ):
-
+    @wraps(func)
+    async def wrapper(update, context):
         if update.effective_user.id != ADMIN_ID:
-
-            await update.message.reply_text(
-                "⛔ Admin only."
+            await update.effective_message.reply_text(
+                "🚫 Admin Only."
             )
-
             return
 
         return await func(
             update,
-            context
+            context,
         )
 
     return wrapper
@@ -4789,916 +4301,174 @@ def admin_only(func):
 # ============================================================
 
 @admin_only
-async def admin_cmd(
-    update,
-    context
-):
+async def admin_panel(update, context):
     await update.message.reply_text(
-        """👑 <b>RAFIM ADMIN CENTER</b>
-
-━━━━━━━━━━━━━━━━━━━━
-
-👤 User:
-/userinfo USER_ID
-/searchuser USER_ID
-/premiumusers
-
-📊 Statistics:
-/stats
-/dailystats
-/refstats
-/leaderboard
-
-💳 Credits:
-/addcredits USER_ID AMOUNT
-/removecredits USER_ID AMOUNT
-
-💎 Premium:
-/addpremium USER_ID DAYS
-/premiumrequests
-/approvepremium ID
-/rejectpremium ID
-
-🎟️ Redeem:
-/createcode CODE CREDITS USES
-/codes
-/disablecode CODE
-
-🚫 Security:
-/ban USER_ID
-/unban USER_ID
-
-📢 Broadcast:
-/broadcast
-/broadcastpremium
-/broadcastfree
-/broadcaststatus
-/cancelbroadcast
-
-⚙️ Settings:
-/adminsettings
-
-━━━━━━━━━━━━━━━━━━━━""",
-        parse_mode=ParseMode.HTML
+        "👑 <b>ADMIN CONTROL PANEL</b>\n\n"
+        "সব Admin Control নিচে দেওয়া হলো।",
+        parse_mode=ParseMode.HTML,
+        reply_markup=admin_keyboard(),
     )
 
 
-@admin_only
-async def stats_cmd(
+async def admin_stats_message(
     update,
-    context
+    context,
 ):
-    con = db()
+    conn = db()
 
-    users = con.execute(
-        "SELECT COUNT(*) FROM users"
-    ).fetchone()[0]
+    users = conn.execute(
+        "SELECT COUNT(*) c FROM users"
+    ).fetchone()["c"]
 
-    premium_count = con.execute(
-        "SELECT COUNT(*) FROM users "
-        "WHERE premium=1"
-    ).fetchone()[0]
+    premium = conn.execute(
+        "SELECT COUNT(*) c FROM users WHERE premium=1"
+    ).fetchone()["c"]
 
-    banned = con.execute(
-        "SELECT COUNT(*) FROM users "
-        "WHERE banned=1"
-    ).fetchone()[0]
+    banned = conn.execute(
+        "SELECT COUNT(*) c FROM users WHERE banned=1"
+    ).fetchone()["c"]
 
-    jobs = con.execute(
-        "SELECT COUNT(*) FROM history"
-    ).fetchone()[0]
+    credits = conn.execute(
+        "SELECT COALESCE(SUM(credits),0) c FROM users"
+    ).fetchone()["c"]
 
-    success = con.execute(
-        "SELECT COUNT(*) FROM history "
-        "WHERE status='success'"
-    ).fetchone()[0]
+    tools = conn.execute(
+        "SELECT COUNT(*) c FROM history"
+    ).fetchone()["c"]
 
-    failed = con.execute(
-        "SELECT COUNT(*) FROM history "
-        "WHERE status='failed'"
-    ).fetchone()[0]
+    today_users = conn.execute(
+        """
+        SELECT COUNT(*) c FROM users
+        WHERE substr(created_at,1,10)=?
+        """,
+        (today(),),
+    ).fetchone()["c"]
 
-    pending = con.execute(
-        "SELECT COUNT(*) FROM premium_requests "
-        "WHERE status='pending'"
-    ).fetchone()[0]
+    conn.close()
 
-    con.close()
-
-    await update.message.reply_text(
-        f"""📊 <b>DETAILED ADMIN STATISTICS</b>
-
-👥 Total Users: {users}
-💎 Premium Users: {premium_count}
-⏳ Pending Premium: {pending}
-🚫 Banned Users: {banned}
-
-⚙️ Total Jobs: {jobs}
-✅ Successful: {success}
-❌ Failed: {failed}
-
-🔥 RAFIM PDF PRO ENGINE""",
-        parse_mode=ParseMode.HTML
+    text = (
+        "📊 <b>ADMIN STATISTICS</b>\n\n"
+        f"👥 Total Users: <b>{fmt_num(users)}</b>\n"
+        f"💎 Premium Users: <b>{fmt_num(premium)}</b>\n"
+        f"🚫 Banned Users: <b>{fmt_num(banned)}</b>\n"
+        f"💰 Total Credits: <b>{fmt_num(credits)}</b>\n"
+        f"🛠️ Tool Usage: <b>{fmt_num(tools)}</b>\n"
+        f"🆕 Today's New Users: <b>{fmt_num(today_users)}</b>\n"
     )
 
-
-@admin_only
-async def daily_stats(
-    update,
-    context
-):
-    today = date.today().isoformat()
-
-    con = db()
-
-    new_users = con.execute(
-        "SELECT COUNT(*) FROM users "
-        "WHERE joined_at LIKE ?",
-        (
-            today + "%",
+    if update.callback_query:
+        await safe_edit(
+            update.callback_query,
+            text,
+            admin_keyboard(),
         )
-    ).fetchone()[0]
-
-    jobs = con.execute(
-        "SELECT COUNT(*) FROM history "
-        "WHERE created_at LIKE ?",
-        (
-            today + "%",
-        )
-    ).fetchone()[0]
-
-    successful = con.execute(
-        "SELECT COUNT(*) FROM history "
-        "WHERE status='success' "
-        "AND created_at LIKE ?",
-        (
-            today + "%",
-        )
-    ).fetchone()[0]
-
-    con.close()
-
-    await update.message.reply_text(
-        f"""📈 <b>DAILY STATISTICS</b>
-
-📅 {today}
-
-👥 New Users: {new_users}
-⚙️ Jobs: {jobs}
-✅ Successful Jobs: {successful}
-
-🚀 Daily engine report complete.""",
-        parse_mode=ParseMode.HTML
-    )
-
-
-@admin_only
-async def userinfo(
-    update,
-    context
-):
-    if not context.args:
-
+    else:
         await update.message.reply_text(
-            "Use: /userinfo USER_ID"
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=admin_keyboard(),
         )
 
+
+@admin_only
+async def stats(update, context):
+    await admin_stats_message(
+        update,
+        context,
+    )
+
+
+# ============================================================
+# USER INFO
+# ============================================================
+
+@admin_only
+async def userinfo(update, context):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /userinfo USER_ID"
+        )
         return
 
     try:
-        uid = int(
-            context.args[0]
-        )
+        uid = int(context.args[0])
     except Exception:
-
         await update.message.reply_text(
-            "Invalid user ID."
+            "❌ Invalid User ID."
         )
-
         return
 
-    u = get_user(uid)
+    row = get_user(uid)
 
-    if not u:
-
+    if not row:
         await update.message.reply_text(
             "❌ User not found."
         )
-
         return
 
     await update.message.reply_text(
-        f"""👤 <b>USER INFORMATION</b>
-
-🆔 <code>{uid}</code>
-👤 {u["first_name"]}
-🔗 @{u["username"] or "none"}
-
-💳 Credits: {u["credits"]}
-
-💎 Premium:
-{"✅ ACTIVE" if is_premium(uid) else "❌ FREE"}
-
-📅 Premium Until:
-<code>{premium_expiry_text(uid)}</code>
-
-⭐ XP: {u["xp"]}
-🏆 Level: {u["level"]}
-🔥 Streak: {u["streak"]}
-
-👥 Referrals: {u["referral_count"]}
-💰 Referral Earnings: {u["referral_earned"]}
-
-🌐 Language: {u["language"]}
-🚫 Banned: {u["banned"]}""",
-        parse_mode=ParseMode.HTML
+        "👤 <b>USER INFO</b>\n\n"
+        f"🆔 ID: <code>{row['user_id']}</code>\n"
+        f"👤 Name: {row['first_name']}\n"
+        f"🔹 Username: @{row['username'] or 'N/A'}\n"
+        f"💰 Credits: <b>{row['credits']}</b>\n"
+        f"⭐ XP: <b>{row['xp']}</b>\n"
+        f"🏆 Level: <b>{level_from_xp(row['xp'])}</b>\n"
+        f"🔥 Streak: <b>{row['streak']}</b>\n"
+        f"👥 Referrals: <b>{row['referral_count']}</b>\n"
+        f"💎 Premium: <b>{'YES' if is_premium(uid) else 'NO'}</b>\n"
+        f"🚫 Banned: <b>{'YES' if row['banned'] else 'NO'}</b>\n"
+        f"📅 Joined: {row['created_at']}",
+        parse_mode=ParseMode.HTML,
     )
 
+
+# ============================================================
+# ADD / REMOVE CREDITS
+# ============================================================
 
 @admin_only
-async def premiumusers_cmd(
-    update,
-    context
-):
-    con = db()
-
-    rows = con.execute("""
-        SELECT user_id,
-               first_name,
-               username,
-               premium_until
-        FROM users
-        WHERE premium=1
-        ORDER BY premium_until ASC
-    """).fetchall()
-
-    con.close()
-
-    if not rows:
-
-        await update.message.reply_text(
-            "💎 No active Premium users."
-        )
-
-        return
-
-    text = (
-        "💎 <b>ACTIVE PREMIUM USERS</b>\n\n"
-    )
-
-    for i, r in enumerate(
-        rows,
-        1
-    ):
-
-        text += (
-            f"{i}. "
-            f"<b>{r['first_name'] or 'User'}</b>\n"
-            f"🆔 <code>{r['user_id']}</code>\n"
-            f"🔗 @{r['username'] or 'none'}\n"
-            f"📅 Until: "
-            f"<code>{r['premium_until'][:16] if r['premium_until'] else 'N/A'}</code>\n"
-            f"━━━━━━━━━━━━━━\n"
-        )
-
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML
-    )
-
-
-@admin_only
-async def addcredits_cmd(
-    update,
-    context
-):
+async def addcredits(update, context):
     if len(context.args) < 2:
-
         await update.message.reply_text(
-            "Use: /addcredits USER_ID AMOUNT"
+            "Usage: /addcredits USER_ID AMOUNT"
         )
-
         return
 
-    uid = int(
-        context.args[0]
-    )
-
-    amount = int(
-        context.args[1]
-    )
+    try:
+        uid = int(context.args[0])
+        amount = int(context.args[1])
+    except Exception:
+        await update.message.reply_text(
+            "❌ Invalid values."
+        )
+        return
 
     if not get_user(uid):
-
         await update.message.reply_text(
             "❌ User not found."
         )
-
         return
 
     add_credits(
         uid,
         amount,
-        "Admin credit"
+        "Admin Credit",
     )
 
     await update.message.reply_text(
-        f"✅ Added {amount} credits to {uid}."
-    )
-
-
-@admin_only
-async def removecredits_cmd(
-    update,
-    context
-):
-    if len(context.args) < 2:
-
-        await update.message.reply_text(
-            "Use: /removecredits USER_ID AMOUNT"
-        )
-
-        return
-
-    uid = int(
-        context.args[0]
-    )
-
-    amount = int(
-        context.args[1]
-    )
-
-    ok = remove_credits(
-        uid,
-        amount,
-        "Admin deduction"
-    )
-
-    await update.message.reply_text(
-        "✅ Credits removed."
-        if ok
-        else
-        "❌ Insufficient credits."
-    )
-
-
-# ============================================================
-# ADMIN MANUAL PREMIUM
-# ============================================================
-
-@admin_only
-async def addpremium_cmd(
-    update,
-    context
-):
-    if len(context.args) < 2:
-
-        await update.message.reply_text(
-            "Use: /addpremium USER_ID DAYS"
-        )
-
-        return
-
-    try:
-        uid = int(
-            context.args[0]
-        )
-
-        days = int(
-            context.args[1]
-        )
-
-    except Exception:
-
-        await update.message.reply_text(
-            "❌ Invalid USER_ID or DAYS."
-        )
-
-        return
-
-    user = get_user(uid)
-
-    if not user:
-
-        await update.message.reply_text(
-            "❌ User not found."
-        )
-
-        return
-
-    base_date = datetime.now()
-
-    if user["premium_until"]:
-
-        try:
-            old_expiry = datetime.fromisoformat(
-                user["premium_until"]
-            )
-
-            if (
-                user["premium"]
-                and old_expiry > base_date
-            ):
-                base_date = old_expiry
-
-        except Exception:
-            pass
-
-    expiry = (
-        base_date
-        + timedelta(days=days)
-    )
-
-    con = db()
-
-    con.execute("""
-        UPDATE users
-        SET premium=1,
-            premium_until=?
-        WHERE user_id=?
-    """, (
-        expiry.isoformat(),
-        uid
-    ))
-
-    con.commit()
-    con.close()
-
-    await update.message.reply_text(
-        f"""💎 <b>PREMIUM ACTIVATED</b>
-
-👤 User:
-<code>{uid}</code>
-
-⏱️ Added:
-<b>{days} days</b>
-
-📅 Premium Until:
-<code>{expiry.strftime("%Y-%m-%d %H:%M")}</code>""",
-        parse_mode=ParseMode.HTML
+        f"✅ <b>+{amount} Credits Added</b>",
+        parse_mode=ParseMode.HTML,
     )
 
     try:
         await context.bot.send_message(
             uid,
-            f"""🎉 <b>PREMIUM ACTIVATED!</b>
-
-👑 Admin has activated Premium for you.
-
-⏱️ Duration:
-<b>{days} days</b>
-
-📅 Valid Until:
-<code>{expiry.strftime("%Y-%m-%d %H:%M")}</code>
-
-🚀 Enjoy RAFIM PDF PRO Premium!""",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception:
-        pass
-
-
-# ============================================================
-# PREMIUM REQUEST ADMIN
-# ============================================================
-
-@admin_only
-async def premiumrequests_cmd(
-    update,
-    context
-):
-    con = db()
-
-    rows = con.execute("""
-        SELECT *
-        FROM premium_requests
-        WHERE status='pending'
-        ORDER BY id DESC
-        LIMIT 30
-    """).fetchall()
-
-    con.close()
-
-    if not rows:
-
-        await update.message.reply_text(
-            "💎 No pending premium requests."
-        )
-
-        return
-
-    for r in rows:
-
-        price = (
-            WEEKLY_PRICE
-            if r["plan"] == "weekly"
-            else MONTHLY_PRICE
-        )
-
-        await update.message.reply_text(
-            f"""💎 <b>PENDING PREMIUM REQUEST</b>
-
-🆔 Request:
-<code>#{r["id"]}</code>
-
-👤 User:
-<code>{r["user_id"]}</code>
-
-📦 Plan:
-<b>{r["plan"].title()}</b>
-
-💰 Price:
-<b>৳{price}</b>
-
-🔐 Transaction:
-<code>{r["transaction_id"]}</code>
-
-📅 Created:
-{r["created_at"][:16]}
-
-👇 Choose action:""",
+            f"🎁 Admin আপনার account-এ <b>+{amount}</b> Credits যোগ করেছেন।",
             parse_mode=ParseMode.HTML,
-            reply_markup=admin_premium_request_keyboard(
-                r["id"]
-            )
-        )
-
-
-@admin_only
-async def approvepremium_cmd(
-    update,
-    context
-):
-    if not context.args:
-
-        await update.message.reply_text(
-            "Use: /approvepremium REQUEST_ID"
-        )
-
-        return
-
-    try:
-        rid = int(
-            context.args[0]
-        )
-    except Exception:
-
-        await update.message.reply_text(
-            "❌ Invalid request ID."
-        )
-
-        return
-
-    con = db()
-
-    row = con.execute(
-        "SELECT * FROM premium_requests "
-        "WHERE id=?",
-        (rid,)
-    ).fetchone()
-
-    if not row:
-
-        con.close()
-
-        await update.message.reply_text(
-            "❌ Request not found."
-        )
-
-        return
-
-    if row["status"] != "pending":
-
-        con.close()
-
-        await update.message.reply_text(
-            f"⚠️ Request #{rid} is already "
-            f"<b>{row['status']}</b>.",
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-    days = (
-        30
-        if row["plan"] == "monthly"
-        else 7
-    )
-
-    user = get_user(
-        row["user_id"]
-    )
-
-    base_date = datetime.now()
-
-    if user and user["premium_until"]:
-
-        try:
-            current_expiry = datetime.fromisoformat(
-                user["premium_until"]
-            )
-
-            if (
-                user["premium"]
-                and current_expiry > base_date
-            ):
-                base_date = current_expiry
-
-        except Exception:
-            pass
-
-    expiry = (
-        base_date
-        + timedelta(days=days)
-    )
-
-    reviewed_at = datetime.now().isoformat()
-
-    con.execute("""
-        UPDATE premium_requests
-        SET status='approved',
-            reviewed_at=?
-        WHERE id=?
-        AND status='pending'
-    """, (
-        reviewed_at,
-        rid
-    ))
-
-    con.execute("""
-        UPDATE users
-        SET premium=1,
-            premium_until=?
-        WHERE user_id=?
-    """, (
-        expiry.isoformat(),
-        row["user_id"]
-    ))
-
-    con.commit()
-    con.close()
-
-    await update.message.reply_text(
-        f"""✅ <b>PREMIUM APPROVED</b>
-
-🆔 Request: #{rid}
-👤 User: <code>{row["user_id"]}</code>
-📦 Plan: {row["plan"].title()}
-
-📅 Premium Until:
-<code>{expiry.strftime("%Y-%m-%d %H:%M")}</code>
-
-🚀 User has been notified.""",
-        parse_mode=ParseMode.HTML
-    )
-
-    try:
-        await context.bot.send_message(
-            row["user_id"],
-            f"""🎉 <b>PREMIUM ACTIVATED!</b>
-
-💎 Plan:
-<b>{row["plan"].title()}</b>
-
-📅 Valid Until:
-<code>{expiry.strftime("%Y-%m-%d %H:%M")}</code>
-
-🚀 Welcome to Premium Power!""",
-            parse_mode=ParseMode.HTML
         )
     except Exception:
         pass
-
-
-@admin_only
-async def rejectpremium_cmd(
-    update,
-    context
-):
-    if not context.args:
-
-        await update.message.reply_text(
-            "Use: /rejectpremium REQUEST_ID"
-        )
-
-        return
-
-    try:
-        rid = int(
-            context.args[0]
-        )
-    except Exception:
-
-        await update.message.reply_text(
-            "❌ Invalid request ID."
-        )
-
-        return
-
-    con = db()
-
-    row = con.execute(
-        "SELECT * FROM premium_requests "
-        "WHERE id=?",
-        (rid,)
-    ).fetchone()
-
-    if not row:
-
-        con.close()
-
-        await update.message.reply_text(
-            "❌ Request not found."
-        )
-
-        return
-
-    if row["status"] != "pending":
-
-        con.close()
-
-        await update.message.reply_text(
-            f"⚠️ Request #{rid} is already "
-            f"<b>{row['status']}</b>.",
-            parse_mode=ParseMode.HTML
-        )
-
-        return
-
-    con.execute("""
-        UPDATE premium_requests
-        SET status='rejected',
-            reviewed_at=?
-        WHERE id=?
-        AND status='pending'
-    """, (
-        datetime.now().isoformat(),
-        rid
-    ))
-
-    con.commit()
-    con.close()
-
-    await update.message.reply_text(
-        f"""❌ <b>PREMIUM REQUEST REJECTED</b>
-
-🆔 Request: #{rid}
-👤 User: <code>{row["user_id"]}</code>
-
-❌ User has been notified.""",
-        parse_mode=ParseMode.HTML
-    )
-
-    try:
-        await context.bot.send_message(
-            row["user_id"],
-            f"""❌ <b>PREMIUM REQUEST REJECTED</b>
-
-🆔 Request:
-<code>#{rid}</code>
-
-📦 Plan:
-{row["plan"].title()}
-
-আপনার Premium request approve করা হয়নি।
-
-সঠিক payment information দিয়ে আবার চেষ্টা করতে পারেন।""",
-            parse_mode=ParseMode.HTML
-        )
-    except Exception:
-        pass
-
-
-# ============================================================
-# REDEEM ADMIN
-# ============================================================
-
-@admin_only
-async def createcode_cmd(
-    update,
-    context
-):
-    if len(context.args) < 3:
-
-        await update.message.reply_text(
-            "Use: /createcode CODE CREDITS USES"
-        )
-
-        return
-
-    code = context.args[0].upper()
-    credits = int(context.args[1])
-    uses = int(context.args[2])
-
-    con = db()
-
-    try:
-
-        con.execute("""
-            INSERT INTO redeem_codes(
-                code,credits,max_uses,created_at
-            )
-            VALUES(?,?,?,?)
-        """, (
-            code,
-            credits,
-            uses,
-            datetime.now().isoformat()
-        ))
-
-        con.commit()
-
-        await update.message.reply_text(
-            f"""🎟️ <b>CODE CREATED</b>
-
-🔐 {code}
-💰 Credits: {credits}
-👥 Uses: {uses}""",
-            parse_mode=ParseMode.HTML
-        )
-
-    except sqlite3.IntegrityError:
-
-        await update.message.reply_text(
-            "❌ Code already exists."
-        )
-
-    finally:
-        con.close()
-
-
-@admin_only
-async def codes_cmd(
-    update,
-    context
-):
-    con = db()
-
-    rows = con.execute(
-        "SELECT * FROM redeem_codes "
-        "ORDER BY created_at DESC"
-    ).fetchall()
-
-    con.close()
-
-    if not rows:
-
-        await update.message.reply_text(
-            "No redeem codes."
-        )
-
-        return
-
-    text = (
-        "🎟️ <b>REDEEM CODES</b>\n\n"
-    )
-
-    for r in rows:
-
-        text += (
-            f"🔐 {r['code']}\n"
-            f"💰 {r['credits']}\n"
-            f"👥 {r['used_count']}/{r['max_uses']}\n"
-            f"Status: "
-            f"{'✅' if r['enabled'] else '❌'}\n\n"
-        )
-
-    await update.message.reply_text(
-        text,
-        parse_mode=ParseMode.HTML
-    )
-
-
-@admin_only
-async def disablecode_cmd(
-    update,
-    context
-):
-    if not context.args:
-
-        await update.message.reply_text(
-            "Use: /disablecode CODE"
-        )
-
-        return
-
-    code = context.args[0].upper()
-
-    con = db()
-
-    con.execute(
-        "UPDATE redeem_codes "
-        "SET enabled=0 "
-        "WHERE code=?",
-        (code,)
-    )
-
-    con.commit()
-    con.close()
-
-    await update.message.reply_text(
-        f"⛔ Code {code} disabled."
-    )
 
 
 # ============================================================
@@ -5706,385 +4476,893 @@ async def disablecode_cmd(
 # ============================================================
 
 @admin_only
-async def ban_cmd(
-    update,
-    context
-):
+async def ban(update, context):
     if not context.args:
-
-        return await update.message.reply_text(
-            "Use: /ban USER_ID"
+        await update.message.reply_text(
+            "Usage: /ban USER_ID"
         )
+        return
 
-    uid = int(
-        context.args[0]
-    )
+    try:
+        uid = int(context.args[0])
+    except Exception:
+        await update.message.reply_text(
+            "❌ Invalid ID."
+        )
+        return
 
-    con = db()
+    if uid == ADMIN_ID:
+        await update.message.reply_text(
+            "❌ নিজের Admin ID ban করা যাবে না।"
+        )
+        return
 
-    con.execute(
-        "UPDATE users SET banned=1 "
-        "WHERE user_id=?",
-        (uid,)
-    )
-
-    con.commit()
-    con.close()
+    ban_user(uid)
 
     await update.message.reply_text(
-        f"🚫 User {uid} banned."
+        f"🚫 User <code>{uid}</code> banned.",
+        parse_mode=ParseMode.HTML,
     )
 
 
 @admin_only
-async def unban_cmd(
-    update,
-    context
-):
+async def unban(update, context):
     if not context.args:
-
-        return await update.message.reply_text(
-            "Use: /unban USER_ID"
+        await update.message.reply_text(
+            "Usage: /unban USER_ID"
         )
+        return
 
-    uid = int(
-        context.args[0]
-    )
+    try:
+        uid = int(context.args[0])
+    except Exception:
+        await update.message.reply_text(
+            "❌ Invalid ID."
+        )
+        return
 
-    con = db()
-
-    con.execute(
-        "UPDATE users SET banned=0 "
-        "WHERE user_id=?",
-        (uid,)
-    )
-
-    con.commit()
-    con.close()
+    unban_user(uid)
 
     await update.message.reply_text(
-        f"✅ User {uid} unbanned."
+        f"✅ User <code>{uid}</code> unbanned.",
+        parse_mode=ParseMode.HTML,
     )
 
 
 # ============================================================
-# LEADERBOARDS
+# PREMIUM ADMIN
+# ============================================================
+
+async def approve_premium(
+    update,
+    context,
+    request_id,
+):
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT * FROM premium_requests
+        WHERE id=? AND status='pending'
+        """,
+        (request_id,),
+    ).fetchone()
+
+    if not row:
+        conn.close()
+
+        await safe_answer(
+            update.callback_query,
+            "Request already processed.",
+            True,
+        )
+        return
+
+    days = (
+        7
+        if row["plan"] == "weekly"
+        else 30
+    )
+
+    conn.execute(
+        """
+        UPDATE premium_requests
+        SET status='approved', updated_at=?
+        WHERE id=?
+        """,
+        (now(), request_id),
+    )
+
+    conn.commit()
+    conn.close()
+
+    set_premium(
+        row["user_id"],
+        days,
+    )
+
+    await safe_edit(
+        update.callback_query,
+        "✅ <b>PREMIUM APPROVED</b>\n\n"
+        f"Request #{request_id}\n"
+        f"User: <code>{row['user_id']}</code>\n"
+        f"Plan: {row['plan']}",
+    )
+
+    try:
+        await context.bot.send_message(
+            row["user_id"],
+            "🎉 <b>PREMIUM APPROVED!</b>\n\n"
+            f"📦 Plan: <b>{row['plan']}</b>\n"
+            f"⏰ Duration: <b>{days} Days</b>\n\n"
+            "আপনার Premium এখন Active।",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        pass
+
+
+async def reject_premium(
+    update,
+    context,
+    request_id,
+):
+    conn = db()
+
+    row = conn.execute(
+        """
+        SELECT * FROM premium_requests
+        WHERE id=? AND status='pending'
+        """,
+        (request_id,),
+    ).fetchone()
+
+    if not row:
+        conn.close()
+        return
+
+    conn.execute(
+        """
+        UPDATE premium_requests
+        SET status='rejected', updated_at=?
+        WHERE id=?
+        """,
+        (now(), request_id),
+    )
+
+    conn.commit()
+    conn.close()
+
+    await safe_edit(
+        update.callback_query,
+        "❌ <b>PREMIUM REQUEST REJECTED</b>\n\n"
+        f"Request #{request_id}",
+    )
+
+    try:
+        await context.bot.send_message(
+            row["user_id"],
+            "❌ আপনার Premium Request reject করা হয়েছে।",
+        )
+    except Exception:
+        pass
+
+
+@admin_only
+async def premium_requests(
+    update,
+    context,
+):
+    conn = db()
+
+    rows = conn.execute(
+        """
+        SELECT * FROM premium_requests
+        WHERE status='pending'
+        ORDER BY id DESC
+        LIMIT 20
+        """
+    ).fetchall()
+
+    conn.close()
+
+    if not rows:
+        text = (
+            "💎 <b>Premium Requests</b>\n\n"
+            "কোনো pending request নেই।"
+        )
+
+        if update.callback_query:
+            await safe_edit(
+                update.callback_query,
+                text,
+                admin_keyboard(),
+            )
+        else:
+            await update.message.reply_text(
+                text,
+                parse_mode=ParseMode.HTML,
+            )
+
+        return
+
+    text = "💎 <b>PENDING PREMIUM REQUESTS</b>\n\n"
+
+    buttons = []
+
+    for row in rows:
+        text += (
+            f"🆔 #{row['id']} | "
+            f"User: <code>{row['user_id']}</code> | "
+            f"{row['plan']}\n"
+        )
+
+        buttons.append(
+            [
+                InlineKeyboardButton(
+                    f"✅ #{row['id']}",
+                    callback_data=f"premapprove:{row['id']}",
+                ),
+                InlineKeyboardButton(
+                    f"❌ #{row['id']}",
+                    callback_data=f"premreject:{row['id']}",
+                ),
+            ]
+        )
+
+    buttons.append(
+        [
+            InlineKeyboardButton(
+                "⬅️ Admin",
+                callback_data="admin:stats",
+            )
+        ]
+    )
+
+    markup = InlineKeyboardMarkup(
+        buttons
+    )
+
+    if update.callback_query:
+        await safe_edit(
+            update.callback_query,
+            text,
+            markup,
+        )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+            reply_markup=markup,
+        )
+
+
+# ============================================================
+# REDEEM ADMIN
 # ============================================================
 
 @admin_only
-async def leaderboard_cmd(
-    update,
-    context
-):
-    con = db()
+async def create_redeem(update, context):
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "Usage:\n"
+            "/createredeem CODE CREDITS USES\n\n"
+            "Example:\n"
+            "/createredeem RAFIM20 20 100"
+        )
+        return
 
-    rows = con.execute("""
-        SELECT first_name,
-               username,
-               referral_count
-        FROM users
-        ORDER BY referral_count DESC
-        LIMIT 10
-    """).fetchall()
+    code = context.args[0].upper()
 
-    con.close()
+    try:
+        credits = int(context.args[1])
+        uses = int(context.args[2])
+    except Exception:
+        await update.message.reply_text(
+            "❌ Credits/Uses must be number."
+        )
+        return
 
-    text = (
-        "🏆 <b>REFERRAL LEADERBOARD</b>\n\n"
+    conn = db()
+
+    try:
+        conn.execute(
+            """
+            INSERT INTO redeem_codes
+            (code, credits, max_uses, used_count,
+             active, created_at)
+            VALUES (?, ?, ?, 0, 1, ?)
+            """,
+            (
+                code,
+                credits,
+                uses,
+                now(),
+            ),
+        )
+
+        conn.commit()
+
+    except sqlite3.IntegrityError:
+        conn.close()
+
+        await update.message.reply_text(
+            "❌ এই Code already exists."
+        )
+        return
+
+    conn.close()
+
+    await update.message.reply_text(
+        "🎟️ <b>REDEEM CREATED</b>\n\n"
+        f"Code: <code>{code}</code>\n"
+        f"Credits: <b>{credits}</b>\n"
+        f"Uses: <b>{uses}</b>",
+        parse_mode=ParseMode.HTML,
     )
 
-    for i, r in enumerate(
-        rows,
-        1
-    ):
+
+@admin_only
+async def redeems(update, context):
+    conn = db()
+
+    rows = conn.execute(
+        """
+        SELECT * FROM redeem_codes
+        ORDER BY created_at DESC
+        LIMIT 30
+        """
+    ).fetchall()
+
+    conn.close()
+
+    if not rows:
+        await update.message.reply_text(
+            "🎟️ No redeem codes."
+        )
+        return
+
+    text = "🎟️ <b>REDEEM CODES</b>\n\n"
+
+    for row in rows:
+        status = (
+            "ON"
+            if row["active"]
+            else "OFF"
+        )
 
         text += (
-            f"{i}. {r['first_name']} — "
-            f"{r['referral_count']} referrals\n"
+            f"🔹 <code>{row['code']}</code>\n"
+            f"💰 {row['credits']} Credits | "
+            f"📊 {row['used_count']}/{row['max_uses']} | "
+            f"{status}\n\n"
         )
 
     await update.message.reply_text(
         text,
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML,
     )
 
+
+# ============================================================
+# SUPPORT TICKETS ADMIN
+# ============================================================
 
 @admin_only
-async def refstats_cmd(
-    update,
-    context
-):
-    con = db()
+async def tickets(update, context):
+    conn = db()
 
-    row = con.execute("""
-        SELECT
-            SUM(referral_count),
-            SUM(referral_earned)
-        FROM users
-    """).fetchone()
+    rows = conn.execute(
+        """
+        SELECT * FROM support_tickets
+        WHERE status='open'
+        ORDER BY id DESC
+        LIMIT 20
+        """
+    ).fetchall()
 
-    con.close()
+    conn.close()
 
-    await update.message.reply_text(
-        f"""👥 <b>REFERRAL STATISTICS</b>
+    if not rows:
+        text = "🎫 কোনো open ticket নেই।"
+    else:
+        text = "🎫 <b>OPEN TICKETS</b>\n\n"
 
-👥 Total Successful Referrals:
-{row[0] or 0}
+        for row in rows:
+            text += (
+                f"#{row['id']} | "
+                f"User: <code>{row['user_id']}</code>\n"
+                f"{row['message'][:300]}\n\n"
+            )
 
-💰 Total Referral Rewards:
-{row[1] or 0} Credits""",
-        parse_mode=ParseMode.HTML
-    )
+    if update.callback_query:
+        await safe_edit(
+            update.callback_query,
+            text,
+            admin_keyboard(),
+        )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.HTML,
+        )
 
 
 # ============================================================
 # BROADCAST
 # ============================================================
 
-async def run_broadcast(
-    bot,
-    mode,
+def create_broadcast_job(
+    target,
     message,
-    admin_id
 ):
-    con = db()
+    conn = db()
 
-    if mode == "premium":
+    if target == "all":
+        total = conn.execute(
+            """
+            SELECT COUNT(*) c
+            FROM users
+            WHERE banned=0
+            """
+        ).fetchone()["c"]
 
-        rows = con.execute(
-            "SELECT user_id FROM users "
-            "WHERE premium=1 AND banned=0"
+    elif target == "premium":
+        total = conn.execute(
+            """
+            SELECT COUNT(*) c
+            FROM users
+            WHERE banned=0 AND premium=1
+            """
+        ).fetchone()["c"]
+
+    else:
+        total = conn.execute(
+            """
+            SELECT COUNT(*) c
+            FROM users
+            WHERE banned=0 AND premium=0
+            """
+        ).fetchone()["c"]
+
+    conn.execute(
+        """
+        INSERT INTO broadcast_jobs
+        (admin_id, target, message, status,
+         total, sent, failed, created_at, updated_at)
+        VALUES (?, ?, ?, 'running', ?, 0, 0, ?, ?)
+        """,
+        (
+            ADMIN_ID,
+            target,
+            message,
+            total,
+            now(),
+            now(),
+        ),
+    )
+
+    job_id = conn.execute(
+        "SELECT last_insert_rowid()"
+    ).fetchone()[0]
+
+    conn.commit()
+    conn.close()
+
+    return job_id
+
+
+async def get_broadcast_users(target):
+    conn = db()
+
+    if target == "all":
+        rows = conn.execute(
+            """
+            SELECT user_id FROM users
+            WHERE banned=0
+            """
         ).fetchall()
 
-    elif mode == "free":
-
-        rows = con.execute(
-            "SELECT user_id FROM users "
-            "WHERE premium=0 AND banned=0"
+    elif target == "premium":
+        rows = conn.execute(
+            """
+            SELECT user_id FROM users
+            WHERE banned=0 AND premium=1
+            """
         ).fetchall()
 
     else:
-
-        rows = con.execute(
-            "SELECT user_id FROM users "
-            "WHERE banned=0"
+        rows = conn.execute(
+            """
+            SELECT user_id FROM users
+            WHERE banned=0 AND premium=0
+            """
         ).fetchall()
 
-    cur = con.execute("""
-        INSERT INTO broadcast_jobs(
-            admin_id,mode,message,total,status,created_at
-        )
-        VALUES(?,?,?,?,?,?)
-    """, (
-        admin_id,
-        mode,
-        message,
-        len(rows),
-        "running",
-        datetime.now().isoformat()
-    ))
+    conn.close()
 
-    job_id = cur.lastrowid
+    return [int(x["user_id"]) for x in rows]
 
-    con.commit()
-    con.close()
+
+async def run_broadcast(
+    context,
+    job_id,
+):
+    conn = db()
+
+    job = conn.execute(
+        """
+        SELECT * FROM broadcast_jobs
+        WHERE id=?
+        """,
+        (job_id,),
+    ).fetchone()
+
+    conn.close()
+
+    if not job:
+        return
+
+    users = await get_broadcast_users(
+        job["target"]
+    )
 
     sent = 0
     failed = 0
 
-    for r in rows:
+    for index, uid in enumerate(users, 1):
+
+        conn = db()
+
+        current = conn.execute(
+            """
+            SELECT status FROM broadcast_jobs
+            WHERE id=?
+            """,
+            (job_id,),
+        ).fetchone()
+
+        conn.close()
+
+        if not current:
+            break
+
+        if current["status"] == "cancelled":
+            break
 
         try:
-
-            await bot.send_message(
-                r["user_id"],
-                message,
-                parse_mode=ParseMode.HTML
+            await context.bot.send_message(
+                uid,
+                job["message"],
+                parse_mode=ParseMode.HTML,
             )
 
             sent += 1
 
-        except Exception:
-
+        except Exception as e:
             failed += 1
 
-        await asyncio.sleep(
-            0.05
+            conn = db()
+
+            conn.execute(
+                """
+                INSERT INTO broadcast_failures
+                (job_id, user_id, error, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    uid,
+                    str(e)[:500],
+                    now(),
+                ),
+            )
+
+            conn.commit()
+            conn.close()
+
+        conn = db()
+
+        conn.execute(
+            """
+            UPDATE broadcast_jobs
+            SET sent=?, failed=?, updated_at=?
+            WHERE id=?
+            """,
+            (
+                sent,
+                failed,
+                now(),
+                job_id,
+            ),
         )
 
-        con = db()
+        conn.commit()
+        conn.close()
 
-        con.execute("""
-            UPDATE broadcast_jobs
-            SET sent=?,failed=?
-            WHERE id=?
-        """, (
-            sent,
-            failed,
-            job_id
-        ))
+        if index % 10 == 0:
+            try:
+                await context.bot.send_message(
+                    ADMIN_ID,
+                    "📢 <b>Broadcast Progress</b>\n\n"
+                    f"🆔 Job: <code>#{job_id}</code>\n"
+                    f"📊 {index}/{len(users)}\n"
+                    f"✅ Sent: {sent}\n"
+                    f"❌ Failed: {failed}",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
 
-        con.commit()
-        con.close()
+        await asyncio.sleep(0.05)
 
-    con = db()
+    conn = db()
 
-    con.execute("""
-        UPDATE broadcast_jobs
-        SET status='completed',
-            finished_at=?
+    status = conn.execute(
+        """
+        SELECT status FROM broadcast_jobs
         WHERE id=?
-    """, (
-        datetime.now().isoformat(),
-        job_id
-    ))
+        """,
+        (job_id,),
+    ).fetchone()
 
-    con.commit()
-    con.close()
+    if status and status["status"] != "cancelled":
+        conn.execute(
+            """
+            UPDATE broadcast_jobs
+            SET status='completed',
+                sent=?,
+                failed=?,
+                updated_at=?
+            WHERE id=?
+            """,
+            (
+                sent,
+                failed,
+                now(),
+                job_id,
+            ),
+        )
+
+    conn.commit()
+    conn.close()
+
+    try:
+        await context.bot.send_message(
+            ADMIN_ID,
+            "✅ <b>BROADCAST FINISHED</b>\n\n"
+            f"🆔 Job: <code>#{job_id}</code>\n"
+            f"✅ Sent: <b>{sent}</b>\n"
+            f"❌ Failed: <b>{failed}</b>",
+            parse_mode=ParseMode.HTML,
+        )
+    except Exception:
+        pass
 
 
 @admin_only
-async def broadcast(
-    update,
-    context
-):
+async def broadcast(update, context):
     context.user_data[
-        "broadcast_mode"
+        "broadcast_target"
     ] = "all"
 
+    context.user_data[
+        "broadcast_mode"
+    ] = True
+
     await update.message.reply_text(
-        """📢 <b>BROADCAST CENTER</b>
-
-Send the message you want to broadcast.
-
-🔥 It will be sent to all non-banned users.""",
-        parse_mode=ParseMode.HTML
+        "📢 <b>BROADCAST MODE</b>\n\n"
+        "এখন যে Message পাঠাবেন সেটাই সব User-এর কাছে যাবে।\n\n"
+        "❌ Cancel: /cancel\n"
+        "⚠️ HTML supported.",
+        parse_mode=ParseMode.HTML,
     )
 
 
 @admin_only
-async def broadcastpremium(
+async def broadcast_premium(
     update,
-    context
+    context,
 ):
     context.user_data[
-        "broadcast_mode"
+        "broadcast_target"
     ] = "premium"
 
-    await update.message.reply_text(
-        "💎 Send the Premium broadcast message."
-    )
-
-
-@admin_only
-async def broadcastfree(
-    update,
-    context
-):
     context.user_data[
         "broadcast_mode"
+    ] = True
+
+    await update.message.reply_text(
+        "💎 <b>PREMIUM BROADCAST MODE</b>\n\n"
+        "Premium users-এর জন্য Message পাঠান।",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@admin_only
+async def broadcast_free(
+    update,
+    context,
+):
+    context.user_data[
+        "broadcast_target"
     ] = "free"
 
-    await update.message.reply_text(
-        "👤 Send the Free User broadcast message."
-    )
-
-
-@admin_only
-async def broadcaststatus(
-    update,
-    context
-):
-    con = db()
-
-    row = con.execute("""
-        SELECT *
-        FROM broadcast_jobs
-        ORDER BY id DESC
-        LIMIT 1
-    """).fetchone()
-
-    con.close()
-
-    if not row:
-
-        await update.message.reply_text(
-            "📢 No broadcast jobs yet."
-        )
-
-        return
+    context.user_data[
+        "broadcast_mode"
+    ] = True
 
     await update.message.reply_text(
-        f"""📊 <b>BROADCAST STATUS</b>
-
-🆔 Job: #{row['id']}
-📡 Mode: {row['mode']}
-📦 Total: {row['total']}
-✅ Sent: {row['sent']}
-❌ Failed: {row['failed']}
-⚙️ Status: {row['status']}""",
-        parse_mode=ParseMode.HTML
+        "🆓 <b>FREE USER BROADCAST MODE</b>\n\n"
+        "Free users-এর জন্য Message পাঠান।",
+        parse_mode=ParseMode.HTML,
     )
 
-
-@admin_only
-async def cancelbroadcast(
-    update,
-    context
-):
-    con = db()
-
-    con.execute("""
-        UPDATE broadcast_jobs
-        SET status='cancelled'
-        WHERE status='running'
-    """)
-
-    con.commit()
-    con.close()
-
-    await update.message.reply_text(
-        "⏹️ Active broadcast marked as cancelled."
-    )
-
-
-# ============================================================
-# BROADCAST TEXT HANDLER
-# ============================================================
 
 async def broadcast_text_handler(
     update,
-    context
+    context,
 ):
-    uid = update.effective_user.id
-
-    if uid != ADMIN_ID:
+    if not context.user_data.get(
+        "broadcast_mode"
+    ):
         return
 
-    mode = context.user_data.get(
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    text = update.message.text.strip()
+
+    context.user_data[
         "broadcast_mode"
+    ] = False
+
+    target = context.user_data.pop(
+        "broadcast_target",
+        "all",
     )
 
-    if not mode:
-        return
-
-    context.user_data.pop(
-        "broadcast_mode",
-        None
+    job_id = create_broadcast_job(
+        target,
+        text,
     )
 
     await update.message.reply_text(
-        "📡 <b>BROADCAST STARTED!</b>",
-        parse_mode=ParseMode.HTML
+        "📢 <b>Broadcast Started!</b>\n\n"
+        f"🆔 Job ID: <code>#{job_id}</code>\n"
+        f"🎯 Target: <b>{target}</b>\n\n"
+        "Progress এবং final report Admin-এ পাঠানো হবে।\n\n"
+        f"Cancel: <code>/cancelbroadcast {job_id}</code>",
+        parse_mode=ParseMode.HTML,
     )
 
     asyncio.create_task(
         run_broadcast(
-            context.bot,
-            mode,
-            update.message.text,
-            uid
+            context,
+            job_id,
         )
+    )
+
+    raise ApplicationHandlerStop
+
+
+@admin_only
+async def cancel_broadcast(
+    update,
+    context,
+):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /cancelbroadcast JOB_ID"
+        )
+        return
+
+    try:
+        job_id = int(context.args[0])
+    except Exception:
+        await update.message.reply_text(
+            "❌ Invalid Job ID."
+        )
+        return
+
+    conn = db()
+
+    conn.execute(
+        """
+        UPDATE broadcast_jobs
+        SET status='cancelled', updated_at=?
+        WHERE id=? AND status='running'
+        """,
+        (
+            now(),
+            job_id,
+        ),
+    )
+
+    conn.commit()
+    conn.close()
+
+    await update.message.reply_text(
+        f"🛑 Broadcast <code>#{job_id}</code> cancellation requested.",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+@admin_only
+async def retry_broadcast(
+    update,
+    context,
+):
+    if not context.args:
+        await update.message.reply_text(
+            "Usage: /retrybroadcast JOB_ID"
+        )
+        return
+
+    try:
+        job_id = int(context.args[0])
+    except Exception:
+        await update.message.reply_text(
+            "❌ Invalid Job ID."
+        )
+        return
+
+    conn = db()
+
+    job = conn.execute(
+        """
+        SELECT * FROM broadcast_jobs
+        WHERE id=?
+        """,
+        (job_id,),
+    ).fetchone()
+
+    failures = conn.execute(
+        """
+        SELECT user_id FROM broadcast_failures
+        WHERE job_id=?
+        """,
+        (job_id,),
+    ).fetchall()
+
+    conn.close()
+
+    if not job:
+        await update.message.reply_text(
+            "❌ Job not found."
+        )
+        return
+
+    if not failures:
+        await update.message.reply_text(
+            "ℹ️ এই Job-এ কোনো failed user নেই।"
+        )
+        return
+
+    success = 0
+    failed = 0
+
+    for row in failures:
+        uid = row["user_id"]
+
+        try:
+            await context.bot.send_message(
+                uid,
+                job["message"],
+                parse_mode=ParseMode.HTML,
+            )
+            success += 1
+
+        except Exception:
+            failed += 1
+
+        await asyncio.sleep(0.05)
+
+    await update.message.reply_text(
+        "🔄 <b>Retry Finished</b>\n\n"
+        f"✅ Success: <b>{success}</b>\n"
+        f"❌ Failed: <b>{failed}</b>",
+        parse_mode=ParseMode.HTML,
     )
 
 
@@ -6095,199 +5373,299 @@ async def broadcast_text_handler(
 @admin_only
 async def adminsettings(
     update,
-    context
+    context,
 ):
     await update.message.reply_text(
-        f"""⚙️ <b>ADMIN SETTINGS</b>
-
-💰 Referral Reward: {REFERRAL_REWARD}
-🎁 Daily Bonus: {DAILY_BONUS}
-⭐ XP Success: {XP_SUCCESS}
-
-💎 Weekly Premium: ৳{WEEKLY_PRICE}
-👑 Monthly Premium: ৳{MONTHLY_PRICE}
-
-📱 bKash:
-<code>{BKASH_NUMBER}</code>
-
-📱 Nagad:
-<code>{NAGAD_NUMBER}</code>
-
-📦 Free File Limit:
-{FREE_FILE_LIMIT_MB} MB
-
-📦 Premium File Limit:
-{PREMIUM_FILE_LIMIT_MB} MB
-
-🌐 Languages: {len(LANGUAGES)}
-🛠️ PDF Tools: Active
-🖼️ Image Tools: Active
-👥 Referral System: Active
-💎 Premium System: Active
-🎟️ Redeem System: Active
-📢 Broadcast: Active
-🔥 XP System: Active
-📊 Statistics: Active""",
-        parse_mode=ParseMode.HTML
+        "⚙️ <b>ADMIN SETTINGS</b>\n\n"
+        "এই version-এ important settings bot.py-এর Config section-এ রাখা হয়েছে।\n\n"
+        f"🎁 Free Credits: <b>{FREE_CREDITS}</b>\n"
+        f"🎁 Daily Bonus: <b>{DAILY_BONUS}</b>\n"
+        f"👥 Referral Reward: <b>{REFERRAL_REWARD}</b>\n"
+        f"⭐ Referral XP: <b>{REFERRAL_XP}</b>\n"
+        f"🆓 Free Limit: <b>{FREE_FILE_LIMIT_MB} MB</b>\n"
+        f"💎 Premium Limit: <b>{PREMIUM_FILE_LIMIT_MB} MB</b>",
+        parse_mode=ParseMode.HTML,
     )
 
 
 # ============================================================
-# HELP / ABOUT / STATUS
+# COMMANDS
 # ============================================================
 
-async def help_cmd(
+async def help_command(update, context):
+    await update.message.reply_text(
+        "📚 <b>HELP CENTER</b>\n\n"
+        "/start — Start Bot\n"
+        "/menu — Main Menu\n"
+        "/admin — Admin Panel\n"
+        "/done — PDF Merge Complete\n"
+        "/doneimages — Images → PDF Complete\n"
+        "/cancel — Cancel current mode\n\n"
+        "📕 PDF Tools\n"
+        "🖼️ Image Tools\n"
+        "📝 Text Tools\n"
+        "🧮 Utility Tools\n"
+        "💎 Premium\n"
+        "🎁 Daily Bonus\n"
+        "👥 Referral\n"
+        "🎟️ Redeem\n"
+        "📜 History\n"
+        "🆘 Support",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def cancel(update, context):
+    keys = [
+        "selected_tool",
+        "pending_file",
+        "pending_input",
+        "pdf_files",
+        "image_files",
+        "text_tool",
+        "utility_tool",
+        "redeem",
+        "waiting",
+        "broadcast_mode",
+        "broadcast_target",
+    ]
+
+    for key in keys:
+        context.user_data.pop(
+            key,
+            None,
+        )
+
+    await update.message.reply_text(
+        "🛑 <b>Cancelled</b>\n\n"
+        "🏠 Main Menu-তে ফিরে গেছেন।",
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard(),
+    )
+
+
+# ============================================================
+# TEXT ROUTER
+# ============================================================
+
+async def text_router(update, context):
+    if not update.message or not update.message.text:
+        return
+
+    uid = update.effective_user.id
+
+    if not get_user(uid):
+        ensure_user(
+            update.effective_user
+        )
+
+    if is_banned(uid):
+        await update.message.reply_text(
+            tr(uid, "banned"),
+        )
+        return
+
+    # Pending file input
+    if await pending_input_handler(
+        update,
+        context,
+    ):
+        return
+
+    # Redeem
+    if context.user_data.get(
+        "waiting"
+    ) == "redeem":
+        context.user_data.pop(
+            "waiting",
+            None,
+        )
+
+        await process_redeem(
+            update,
+            update.message.text,
+        )
+        return
+
+    # Text tools
+    text_tool = context.user_data.get(
+        "text_tool"
+    )
+
+    if text_tool:
+        await process_text_tool(
+            update,
+            context,
+            text_tool,
+        )
+        return
+
+    # Utility tools
+    utility_tool = context.user_data.get(
+        "utility_tool"
+    )
+
+    if utility_tool:
+        await process_utility(
+            update,
+            context,
+            utility_tool,
+        )
+        return
+
+    # Reply Keyboard
+    text = update.message.text.strip()
+
+    if text == "📕 PDF Tools":
+        await pdf_menu(update, context)
+        return
+
+    if text == "🖼️ Image Tools":
+        await image_menu(update, context)
+        return
+
+    if text == "📝 Text Tools":
+        await text_menu(update, context)
+        return
+
+    if text == "🧮 Utility Tools":
+        await utility_menu(update, context)
+        return
+
+    if text == "💎 Premium":
+        await premium(update, context)
+        return
+
+    if text == "👤 Account":
+        await account(update, context)
+        return
+
+    if text == "🎁 Daily Bonus":
+        await daily_bonus(update, context)
+        return
+
+    if text == "👥 Referral":
+        await referral(update, context)
+        return
+
+    if text == "🎟️ Redeem":
+        await redeem(update, context)
+        return
+
+    if text == "📜 History":
+        await history(update, context)
+        return
+
+    if text == "🆘 Support":
+        await support(update, context)
+        return
+
+    if text == "⚙️ Settings":
+        await settings(update, context)
+        return
+
+    if text == "🏠 Main Menu":
+        await main_menu(update, context)
+        return
+
+    await update.message.reply_text(
+        "ℹ️ নিচের Menu থেকে একটি Option নির্বাচন করুন।",
+        reply_markup=main_keyboard(),
+    )
+
+
+# ============================================================
+# PREMIUM EXPIRY WATCHER
+# ============================================================
+
+async def premium_expiry_watcher(
+    application,
+):
+    while True:
+        try:
+            conn = db()
+
+            rows = conn.execute(
+                """
+                SELECT user_id
+                FROM users
+                WHERE premium=1
+                AND premium_until != ''
+                AND premium_until < ?
+                """,
+                (datetime.now().isoformat(sep=" "),),
+            ).fetchall()
+
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET premium=0
+                    WHERE user_id=?
+                    """,
+                    (row["user_id"],),
+                )
+
+            conn.commit()
+            conn.close()
+
+            for row in rows:
+                try:
+                    await application.bot.send_message(
+                        row["user_id"],
+                        "⏰ আপনার Premium মেয়াদ শেষ হয়েছে।",
+                    )
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+        await asyncio.sleep(300)
+
+
+# ============================================================
+# ERROR HANDLER
+# ============================================================
+
+async def error_handler(
     update,
-    context
+    context,
 ):
-    await update.message.reply_text(
-        """❓ <b>RAFIM PDF PRO HELP</b>
-
-📕 PDF Tools
-🖼️ Image Tools
-💎 Premium
-👥 Referral
-🎁 Daily Bonus
-🎟️ Redeem
-📜 History
-⭐ XP & Level
-🔥 Daily Streak
-🌐 Multi-language
-🆘 Support
-
-📤 Send a file after selecting a tool.
-
-🔥 Fast. Smart. Powerful.""",
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def about_cmd(
-    update,
-    context
-):
-    await update.message.reply_text(
-        """ℹ️ <b>RAFIM PDF PRO</b>
-
-🚀 Professional Telegram file-processing system.
-
-📕 PDF Processing
-🖼️ Image Processing
-💎 Premium
-👥 Referral
-🎁 Rewards
-🎟️ Redeem
-📊 Admin System
-🌐 Multi-language
-
-⚡ Built for fast file processing.""",
-        parse_mode=ParseMode.HTML
-    )
-
-
-async def status_cmd(
-    update,
-    context
-):
-    await update.message.reply_text(
-        """🟢 <b>SYSTEM ONLINE</b>
-
-🤖 Bot: ONLINE
-📦 PDF Engine: ONLINE
-🖼️ Image Engine: ONLINE
-💾 Database: ONLINE
-🌐 Language Engine: ONLINE
-👥 Referral Engine: ONLINE
-💎 Premium Engine: ONLINE
-📢 Broadcast Engine: ONLINE
-
-🔥 RAFIM PDF PRO IS READY!""",
-        parse_mode=ParseMode.HTML
-    )
+    try:
+        print(
+            "ERROR:",
+            repr(context.error),
+        )
+    except Exception:
+        pass
 
 
 # ============================================================
-# COMMAND SETUP
-# ============================================================
-
-async def setup_commands(app):
-
-    await app.bot.set_my_commands([
-        (
-            "start",
-            "Start bot"
-        ),
-        (
-            "menu",
-            "Main menu"
-        ),
-        (
-            "premium",
-            "Premium"
-        ),
-        (
-            "account",
-            "My account"
-        ),
-        (
-            "bonus",
-            "Daily bonus"
-        ),
-        (
-            "refer",
-            "Refer & Earn"
-        ),
-        (
-            "redeem",
-            "Redeem code"
-        ),
-        (
-            "history",
-            "History"
-        ),
-        (
-            "help",
-            "Help"
-        ),
-        (
-            "about",
-            "About"
-        ),
-        (
-            "status",
-            "Status"
-        ),
-        (
-            "admin",
-            "Admin panel"
-        ),
-    ])
-
-
-# ============================================================
-# MAIN
+# POST INIT
 # ============================================================
 
 async def post_init(application):
-    await setup_commands(
-        application
-    )
-
-    # Start automatic Premium expiry watcher
-    application.create_task(
+    asyncio.create_task(
         premium_expiry_watcher(
             application
         )
     )
 
 
+# ============================================================
+# MAIN
+# ============================================================
+
 def main():
+    init_db()
 
-    if not BOT_TOKEN:
+    import threading
 
-        raise RuntimeError(
-            "BOT_TOKEN environment variable is missing."
-        )
+    threading.Thread(
+        target=run_web,
+        daemon=True,
+    ).start()
 
     application = (
         Application.builder()
@@ -6296,391 +5674,210 @@ def main():
         .build()
     )
 
-    # ========================================================
-    # COMMANDS
-    # ========================================================
-
+    # Commands
     application.add_handler(
         CommandHandler(
             "start",
-            start
+            start,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "menu",
-            menu
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "premium",
-            premium
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "account",
-            account
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "bonus",
-            bonus
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "refer",
-            refer
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "referrals",
-            referral_stats
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "redeem",
-            redeem
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "history",
-            history_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "credits",
-            credit_history_cmd
+            main_menu,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "help",
-            help_cmd
+            help_command,
         )
     )
 
     application.add_handler(
         CommandHandler(
-            "about",
-            about_cmd
+            "cancel",
+            cancel,
         )
     )
-
-    application.add_handler(
-        CommandHandler(
-            "status",
-            status_cmd
-        )
-    )
-
-    # ========================================================
-    # MERGE
-    # ========================================================
 
     application.add_handler(
         CommandHandler(
             "done",
-            done_command
+            done_command,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "doneimages",
-            done_images
+            done_images,
         )
     )
 
-    # ========================================================
-    # ADMIN
-    # ========================================================
-
+    # Admin
     application.add_handler(
         CommandHandler(
             "admin",
-            admin_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "userinfo",
-            userinfo
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "searchuser",
-            userinfo
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "premiumusers",
-            premiumusers_cmd
+            admin_panel,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "stats",
-            stats_cmd
+            stats,
         )
     )
 
     application.add_handler(
         CommandHandler(
-            "dailystats",
-            daily_stats
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "refstats",
-            refstats_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "leaderboard",
-            leaderboard_cmd
+            "userinfo",
+            userinfo,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "addcredits",
-            addcredits_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "removecredits",
-            removecredits_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "addpremium",
-            addpremium_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "premiumrequests",
-            premiumrequests_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "approvepremium",
-            approvepremium_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "rejectpremium",
-            rejectpremium_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "createcode",
-            createcode_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "codes",
-            codes_cmd
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "disablecode",
-            disablecode_cmd
+            addcredits,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "ban",
-            ban_cmd
+            ban,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "unban",
-            unban_cmd
+            unban,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "createredeem",
+            create_redeem,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "redeems",
+            redeems,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "tickets",
+            tickets,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "broadcast",
-            broadcast
+            broadcast,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "broadcastpremium",
-            broadcastpremium
+            broadcast_premium,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "broadcastfree",
-            broadcastfree
-        )
-    )
-
-    application.add_handler(
-        CommandHandler(
-            "broadcaststatus",
-            broadcaststatus
+            broadcast_free,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "cancelbroadcast",
-            cancelbroadcast
+            cancel_broadcast,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "retrybroadcast",
+            retry_broadcast,
         )
     )
 
     application.add_handler(
         CommandHandler(
             "adminsettings",
-            adminsettings
+            adminsettings,
         )
     )
 
-    # ========================================================
-    # CALLBACK
-    # ========================================================
-
+    # Callback
     application.add_handler(
         CallbackQueryHandler(
-            callback_handler
+            tool_callback
         )
     )
 
-    # ========================================================
-    # FILES
-    # ========================================================
-
-    application.add_handler(
-        MessageHandler(
-            filters.Document.ALL,
-            document_handler
-        )
-    )
-
-    application.add_handler(
-        MessageHandler(
-            filters.PHOTO,
-            photo_handler
-        )
-    )
-
-    # ========================================================
-    # BROADCAST
-    # ========================================================
-
+    # Broadcast text MUST run before normal text
     application.add_handler(
         MessageHandler(
             filters.TEXT
             & ~filters.COMMAND
-            & filters.User(ADMIN_ID),
-            broadcast_text_handler
+            & filters.User(
+                user_id=ADMIN_ID
+            ),
+            broadcast_text_handler,
         ),
-        group=1
+        group=0,
     )
 
-    # ========================================================
-    # NORMAL TEXT
-    # ========================================================
-
+    # Normal text
     application.add_handler(
         MessageHandler(
             filters.TEXT
             & ~filters.COMMAND,
-            text_handler
+            text_router,
+        ),
+        group=1,
+    )
+
+    # Documents
+    application.add_handler(
+        MessageHandler(
+            filters.Document.ALL,
+            document_handler,
         )
     )
 
-    print(
-        "==================================="
-    )
-    print(
-        " RAFIM PDF PRO"
-    )
-    print(
-        " BOT STARTED"
-    )
-    print(
-        " MULTI-LANGUAGE ENGINE: ON"
-    )
-    print(
-        " PDF ENGINE: ON"
-    )
-    print(
-        " IMAGE ENGINE: ON"
-    )
-    print(
-        " REFERRAL ENGINE: ON"
-    )
-    print(
-        " PREMIUM ENGINE: ON"
-    )
-    print(
-        " PREMIUM APPROVE/REJECT: ON"
-    )
-    print(
-        " PREMIUM EXPIRY WATCHER: ON"
-    )
-    print(
-        " ADMIN ENGINE: ON"
-    )
-    print(
-        "==================================="
+    # Photos
+    application.add_handler(
+        MessageHandler(
+            filters.PHOTO,
+            photo_handler,
+        )
     )
 
+    application.add_error_handler(
+        error_handler
+    )
+
+    print("Rafim Tools Bot Started...")
+
     application.run_polling(
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        allowed_updates=Update.ALL_TYPES,
     )
 
 
