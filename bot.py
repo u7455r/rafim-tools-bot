@@ -27,12 +27,15 @@ import secrets
 import hashlib
 import tempfile
 import subprocess
+import time
+from collections import deque
 from datetime import datetime, date, timedelta
 from functools import wraps
 from urllib.parse import quote, unquote
 
 import fitz
 import qrcode
+import yt_dlp
 
 from PIL import Image, ImageOps, ImageEnhance, ImageDraw, ImageFont
 from docx import Document
@@ -98,8 +101,7 @@ MONTHLY_PRICE = 150
 
 # Payment number code-এর ভিতরে রাখা হয়েছে।
 # নিজের নম্বর চাইলে শুধু এখানেই পরিবর্তন করবে।
-BKASH_NUMBER = "CHANGE_THIS_BKASH_NUMBER"
-NAGAD_NUMBER = "CHANGE_THIS_NAGAD_NUMBER"
+NAGAD_NUMBER = "01726836941"
 
 
 # ============================================================
@@ -255,6 +257,47 @@ def init_db():
         CREATE TABLE IF NOT EXISTS admin_settings (
             key TEXT PRIMARY KEY,
             value TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS downloader_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            url TEXT,
+            title TEXT DEFAULT '',
+            kind TEXT DEFAULT 'video',
+            quality TEXT DEFAULT '',
+            filename TEXT DEFAULT '',
+            status TEXT DEFAULT 'queued',
+            error TEXT DEFAULT '',
+            created_at TEXT,
+            completed_at TEXT DEFAULT ''
+        );
+
+        CREATE TABLE IF NOT EXISTS downloader_jobs (
+            job_id TEXT PRIMARY KEY,
+            user_id INTEGER,
+            url TEXT,
+            title TEXT DEFAULT '',
+            kind TEXT DEFAULT 'video',
+            quality TEXT DEFAULT '',
+            status TEXT DEFAULT 'queued',
+            progress REAL DEFAULT 0,
+            downloaded INTEGER DEFAULT 0,
+            total INTEGER DEFAULT 0,
+            speed REAL DEFAULT 0,
+            eta INTEGER DEFAULT 0,
+            filename TEXT DEFAULT '',
+            error TEXT DEFAULT '',
+            created_at TEXT,
+            updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS direct_chat_sessions (
+            admin_id INTEGER PRIMARY KEY,
+            user_id INTEGER NOT NULL,
+            active INTEGER DEFAULT 1,
+            created_at TEXT,
+            updated_at TEXT
         );
         """
     )
@@ -647,7 +690,7 @@ def main_keyboard():
         [
             ["📕 PDF Tools", "🖼️ Image Tools"],
             ["📝 Text Tools", "🧮 Utility Tools"],
-            ["💎 Premium", "👤 Account"],
+            ["📥 Video Downloader", "💎 Premium"],
             ["🎁 Daily Bonus", "👥 Referral"],
             ["🎟️ Redeem", "📜 History"],
             ["🆘 Support", "⚙️ Settings"],
@@ -792,6 +835,490 @@ def back_keyboard(target="main"):
             ]
         ]
     )
+
+
+
+# ============================================================
+# DOWNLOADER SYSTEM (yt-dlp, API-FREE)
+# ============================================================
+
+DL_QUEUE = None
+DL_QUEUE_WORKER_STARTED = False
+DL_JOBS = {}
+DL_URL_CACHE = {}
+DL_LAST_UPDATE = {}
+DL_QUEUE_LOCK = asyncio.Lock()
+
+
+def dl_size(value):
+    try:
+        value = float(value or 0)
+    except Exception:
+        value = 0
+    units = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while value >= 1024 and i < len(units) - 1:
+        value /= 1024
+        i += 1
+    return f"{value:.1f} {units[i]}"
+
+
+def dl_speed(value):
+    return f"{dl_size(value)}/s" if value else "—"
+
+
+def dl_eta(seconds):
+    try:
+        seconds = int(seconds or 0)
+    except Exception:
+        seconds = 0
+    if seconds <= 0:
+        return "—"
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def dl_bar(percent, width=18):
+    try:
+        percent = max(0, min(100, float(percent)))
+    except Exception:
+        percent = 0
+    filled = int(width * percent / 100)
+    return "█" * filled + "░" * (width - filled)
+
+
+def dl_clean_title(title):
+    title = re.sub(r"[\x00-\x1f<>:]", " ", str(title or "Unknown"))
+    return re.sub(r"\s+", " ", title).strip()[:180] or "Downloaded file"
+
+
+def dl_duration(seconds):
+    try:
+        seconds = int(seconds or 0)
+    except Exception:
+        return "N/A"
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
+def dl_is_url(text):
+    return bool(re.match(r"^https?://[^\s]+$", text.strip(), re.I))
+
+
+def dl_extract(url):
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+        "socket_timeout": 20,
+    }
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        return ydl.extract_info(url, download=False)
+
+
+def dl_quality_list(info):
+    heights = set()
+    for f in info.get("formats") or []:
+        h = f.get("height")
+        if h:
+            try:
+                h = int(h)
+                if h >= 144:
+                    heights.add(h)
+            except Exception:
+                pass
+    if not heights and info.get("height"):
+        heights.add(int(info["height"]))
+    return sorted(heights, reverse=True)[:8]
+
+
+def dl_history_add(user_id, url, title, kind, quality, filename, status, error=""):
+    conn = db()
+    conn.execute(
+        """INSERT INTO downloader_history
+        (user_id,url,title,kind,quality,filename,status,error,created_at,completed_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (user_id, url, title, kind, quality, filename, status, error, now(), now() if status in ("success", "failed", "cancelled") else "")
+    )
+    conn.commit()
+    conn.close()
+
+
+def dl_job_db(job):
+    conn = db()
+    conn.execute(
+        """INSERT OR REPLACE INTO downloader_jobs
+        (job_id,user_id,url,title,kind,quality,status,progress,downloaded,total,speed,eta,filename,error,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (job["id"], job["user_id"], job["url"], job.get("title", ""), job["kind"], job.get("quality", ""),
+         job["status"], job.get("progress", 0), job.get("downloaded", 0), job.get("total", 0), job.get("speed", 0),
+         job.get("eta", 0), job.get("filename", ""), job.get("error", ""), job["created_at"], now())
+    )
+    conn.commit()
+    conn.close()
+
+
+def dl_stats(user_id=None):
+    conn = db()
+    where = "WHERE user_id=?" if user_id else ""
+    args = (user_id,) if user_id else ()
+    row = conn.execute(
+        f"SELECT COUNT(*) total, SUM(CASE WHEN status='success' THEN 1 ELSE 0 END) success, "
+        f"SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) failed, "
+        f"SUM(CASE WHEN status='cancelled' THEN 1 ELSE 0 END) cancelled FROM downloader_history {where}", args
+    ).fetchone()
+    conn.close()
+    return {"total": row[0] or 0, "success": row[1] or 0, "failed": row[2] or 0, "cancelled": row[3] or 0}
+
+
+def dl_recent_history(user_id, limit=10):
+    conn = db()
+    rows = conn.execute(
+        "SELECT id,title,kind,quality,status,created_at FROM downloader_history WHERE user_id=? ORDER BY id DESC LIMIT ?",
+        (user_id, limit)
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+async def downloader_menu(update, context):
+    await update.message.reply_text(
+        "📥 <b>VIDEO DOWNLOADER</b>\n\n"
+        "🔗 YouTube, Facebook, Instagram, TikTok এবং yt-dlp-supported public URLs দিন।\n"
+        "🖼️ Link দিলে আগে Title + Thumbnail + Duration + Quality দেখাবে।\n"
+        "🎵 Audio download-ও আছে।\n\n"
+        "👉 এখন একটি video URL পাঠান।\n"
+        "🛑 বন্ধ করতে /cancel লিখুন।",
+        parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📜 Download History", callback_data="dl:history")], [InlineKeyboardButton("📊 My Downloader Stats", callback_data="dl:stats")]])
+    )
+    context.user_data["downloader_waiting_url"] = True
+
+
+async def downloader_show_info(update, context, url):
+    uid = update.effective_user.id
+    msg = await update.message.reply_text("🔎 <b>Link checking...</b>", parse_mode=ParseMode.HTML)
+    try:
+        info = await asyncio.to_thread(dl_extract, url)
+        title = dl_clean_title(info.get("title"))
+        duration = dl_duration(info.get("duration"))
+        thumb = info.get("thumbnail") or ""
+        heights = dl_quality_list(info)
+        job_id = uuid.uuid4().hex[:10]
+        DL_URL_CACHE[job_id] = {"url": url, "info": info, "user_id": uid, "title": title}
+        buttons = []
+        row = []
+        for h in heights:
+            row.append(InlineKeyboardButton(f"🎞️ {h}p", callback_data=f"dlq:{job_id}:{h}"))
+            if len(row) == 3:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+        buttons.append([InlineKeyboardButton("🎵 Audio", callback_data=f"dla:{job_id}")])
+        buttons.append([InlineKeyboardButton("❌ Cancel", callback_data=f"dlcancel:{job_id}")])
+        caption = (
+            f"🎬 <b>{title}</b>\n\n"
+            f"⏱ Duration: <b>{duration}</b>\n"
+            f"🌐 Site: <b>{info.get('extractor_key') or info.get('extractor') or 'Unknown'}</b>\n\n"
+            "🎞️ Quality নির্বাচন করুন:"
+        )
+        try:
+            if thumb:
+                await msg.delete()
+                await update.message.reply_photo(thumb, caption=caption, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons))
+            else:
+                await msg.edit_text(caption, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons))
+        except Exception:
+            await msg.edit_text(caption, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(buttons))
+    except Exception as e:
+        await msg.edit_text(
+            "❌ <b>ERROR</b>\n\nএই URL থেকে তথ্য পাওয়া যায়নি।\n\n"
+            f"<code>{str(e)[:500]}</code>\n\n🔄 অন্য একটি public URL চেষ্টা করুন।",
+            parse_mode=ParseMode.HTML,
+        )
+    finally:
+        context.user_data.pop("downloader_waiting_url", None)
+
+
+def dl_make_job(uid, cache, kind, quality):
+    job_id = uuid.uuid4().hex[:12]
+    job = {
+        "id": job_id, "user_id": uid, "url": cache["url"], "title": cache.get("title", "Downloaded file"),
+        "kind": kind, "quality": str(quality), "status": "queued", "progress": 0, "downloaded": 0,
+        "total": 0, "speed": 0, "eta": 0, "filename": "", "error": "", "created_at": now(),
+        "message": None, "cancel": __import__("threading").Event(), "retry": 0,
+    }
+    DL_JOBS[job_id] = job
+    dl_job_db(job)
+    return job
+
+
+def dl_progress_hook(job, loop):
+    def hook(d):
+        job["status"] = d.get("status", job["status"])
+        job["downloaded"] = int(d.get("downloaded_bytes") or 0)
+        job["total"] = int(d.get("total_bytes") or d.get("total_bytes_estimate") or 0)
+        job["speed"] = float(d.get("speed") or 0)
+        job["eta"] = int(d.get("eta") or 0)
+        if job["total"]:
+            job["progress"] = min(100, job["downloaded"] * 100 / job["total"])
+        if d.get("filename"):
+            job["filename"] = os.path.basename(d["filename"])
+        if job["cancel"].is_set():
+            raise yt_dlp.utils.DownloadCancelled("Cancelled by user")
+        ts = time.monotonic()
+        if ts - DL_LAST_UPDATE.get(job["id"], 0) >= 1.2:
+            DL_LAST_UPDATE[job["id"]] = ts
+            if job.get("message"):
+                asyncio.run_coroutine_threadsafe(downloader_update_progress(job), loop)
+    return hook
+
+
+async def downloader_update_progress(job):
+    msg = job.get("message")
+    if not msg:
+        return
+    p = job.get("progress", 0)
+    text = (
+        f"📥 <b>Downloading...</b>\n\n"
+        f"🎬 {dl_clean_title(job.get('title'))}\n"
+        f"📊 <code>{dl_bar(p)}</code> <b>{p:.1f}%</b>\n"
+        f"⚡ Speed: <b>{dl_speed(job.get('speed'))}</b>\n"
+        f"📦 Downloaded: <b>{dl_size(job.get('downloaded'))}</b> / <b>{dl_size(job.get('total')) if job.get('total') else 'Unknown'}</b>\n"
+        f"⏱ ETA: <b>{dl_eta(job.get('eta'))}</b>\n\n"
+        "🛑 চাইলে নিচের Cancel চাপুন।"
+    )
+    try:
+        await msg.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data=f"dlcancel:{job['id']}")]]))
+    except Exception:
+        pass
+
+
+async def downloader_worker(application):
+    global DL_QUEUE, DL_QUEUE_WORKER_STARTED
+    if DL_QUEUE is None:
+        DL_QUEUE = asyncio.Queue()
+    if DL_QUEUE_WORKER_STARTED:
+        return
+    DL_QUEUE_WORKER_STARTED = True
+    while True:
+        job = await DL_QUEUE.get()
+        try:
+            await downloader_run_job(application, job)
+        except Exception as e:
+            job["status"] = "failed"
+            job["error"] = str(e)
+            dl_job_db(job)
+        finally:
+            DL_QUEUE.task_done()
+
+
+async def downloader_run_job(application, job):
+    uid = job["user_id"]
+    try:
+        job["status"] = "downloading"
+        dl_job_db(job)
+        outdir = os.path.join(TEMP_DIR, "downloader", job["id"])
+        os.makedirs(outdir, exist_ok=True)
+        loop = asyncio.get_running_loop()
+        opts = {
+            "quiet": True,
+            "no_warnings": True,
+            "noplaylist": True,
+            "outtmpl": os.path.join(outdir, "%(title).150B-%(id)s.%(ext)s"),
+            "progress_hooks": [dl_progress_hook(job, loop)],
+            "socket_timeout": 30,
+            "retries": 3,
+            "fragment_retries": 3,
+            "continuedl": True,
+        }
+        ffmpeg_path = shutil.which("ffmpeg")
+        if not ffmpeg_path:
+            try:
+                import imageio_ffmpeg
+                ffmpeg_path = imageio_ffmpeg.get_ffmpeg_exe()
+            except Exception:
+                ffmpeg_path = None
+        if ffmpeg_path:
+            opts["ffmpeg_location"] = ffmpeg_path
+        if job["kind"] == "audio":
+            opts.update({"format": "bestaudio/best"})
+            if ffmpeg_path:
+                opts["postprocessors"] = [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}]
+        else:
+            h = int(job["quality"])
+            if ffmpeg_path:
+                fmt = f"bestvideo[height<={h}]+bestaudio/best[height<={h}]/best[height<={h}]/best"
+                opts["merge_output_format"] = "mp4"
+            else:
+                fmt = f"best[height<={h}]/best"
+            opts["format"] = fmt
+        def run():
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                return ydl.extract_info(job["url"], download=True)
+        info = await asyncio.to_thread(run)
+        if job["cancel"].is_set():
+            raise yt_dlp.utils.DownloadCancelled("Cancelled by user")
+        files = [os.path.join(outdir, x) for x in os.listdir(outdir) if os.path.isfile(os.path.join(outdir, x))]
+        if not files:
+            raise RuntimeError("Downloaded file was not created.")
+        path = max(files, key=os.path.getsize)
+        size = os.path.getsize(path)
+        premium = is_premium(uid)
+        ok, limit = check_file_size(size, premium)
+        if not ok:
+            raise RuntimeError(f"File size {dl_size(size)} exceeds your {limit} MB limit.")
+        job["filename"] = os.path.basename(path)
+        job["progress"] = 100
+        job["status"] = "success"
+        job["downloaded"] = size
+        job["total"] = size
+        dl_job_db(job)
+        dl_history_add(uid, job["url"], job["title"], job["kind"], job["quality"], job["filename"], "success")
+        caption = f"✅ <b>DOWNLOAD SUCCESS</b>\n\n🎬 {dl_clean_title(job['title'])}\n📦 {dl_size(size)}\n🎞️ {job['quality'] if job['kind']=='video' else 'Audio'}"
+        with open(path, "rb") as f:
+            if job["kind"] == "audio" and path.lower().endswith((".mp3", ".m4a", ".aac", ".ogg")):
+                await application.bot.send_audio(uid, audio=f, caption=caption, parse_mode=ParseMode.HTML, title=job["title"][:100])
+            elif job["kind"] == "audio":
+                await application.bot.send_document(uid, document=f, caption=caption, parse_mode=ParseMode.HTML)
+            else:
+                await application.bot.send_video(uid, video=f, caption=caption, parse_mode=ParseMode.HTML, supports_streaming=True)
+    except yt_dlp.utils.DownloadCancelled:
+        job["status"] = "cancelled"
+        job["error"] = "Cancelled by user"
+        dl_job_db(job)
+        dl_history_add(uid, job["url"], job["title"], job["kind"], job["quality"], job.get("filename", ""), "cancelled", "Cancelled by user")
+        try:
+            await application.bot.send_message(uid, "🛑 <b>Download Cancelled</b>", parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
+    except Exception as e:
+        job["status"] = "failed"
+        job["error"] = str(e)
+        dl_job_db(job)
+        dl_history_add(uid, job["url"], job["title"], job["kind"], job["quality"], job.get("filename", ""), "failed", str(e)[:1000])
+        try:
+            await application.bot.send_message(uid, f"❌ <b>DOWNLOAD ERROR</b>\n\n<code>{str(e)[:1200]}</code>", parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔄 Retry", callback_data=f"dlretry:{job['id']}")]]))
+        except Exception:
+            pass
+    finally:
+        try:
+            shutil.rmtree(outdir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+async def downloader_enqueue(update, context, job):
+    global DL_QUEUE
+    if DL_QUEUE is None:
+        DL_QUEUE = asyncio.Queue()
+    waiting = DL_QUEUE.qsize()
+    job["queue_position"] = waiting + 1
+    await DL_QUEUE.put(job)
+    await update.effective_message.reply_text(
+        f"📋 <b>Added to Queue</b>\n\n🆔 <code>{job['id']}</code>\n🎬 {dl_clean_title(job['title'])}\n📍 Queue Position: <b>{waiting + 1}</b>",
+        parse_mode=ParseMode.HTML,
+    )
+
+
+async def downloader_history_message(update, user_id):
+    rows = dl_recent_history(user_id, 10)
+    stats = dl_stats(user_id)
+    if not rows:
+        text = "📜 <b>Download History</b>\n\nকোনো download history নেই।"
+    else:
+        items = []
+        for r in rows:
+            icon = "✅" if r[4] == "success" else ("🛑" if r[4] == "cancelled" else "❌")
+            items.append(f"{icon} <b>{dl_clean_title(r[1])[:60]}</b>\n   🎞️ {r[2]} {r[3]} • {r[5]}")
+        text = "📜 <b>Download History</b>\n\n" + "\n\n".join(items)
+    text += f"\n\n📊 Total: <b>{stats['total']}</b> • ✅ {stats['success']} • ❌ {stats['failed']} • 🛑 {stats['cancelled']}"
+    await update.effective_message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📥 Downloader", callback_data="dl:menu")]]))
+
+
+async def downloader_admin_stats(update, context):
+    if not is_admin(update.effective_user.id):
+        return
+    stats = dl_stats()
+    conn = db()
+    active = conn.execute("SELECT COUNT(*) FROM downloader_jobs WHERE status IN ('queued','downloading')").fetchone()[0]
+    conn.close()
+    await update.effective_message.reply_text(
+        "📊 <b>DOWNLOADER STATISTICS</b>\n\n"
+        f"📥 Total: <b>{stats['total']}</b>\n"
+        f"✅ Success: <b>{stats['success']}</b>\n"
+        f"❌ Failed: <b>{stats['failed']}</b>\n"
+        f"🛑 Cancelled: <b>{stats['cancelled']}</b>\n"
+        f"⏳ Active/Queue: <b>{active}</b>", parse_mode=ParseMode.HTML)
+
+
+async def admin_direct_chat_start(update, context):
+    if not is_admin(update.effective_user.id):
+        return
+    if not context.args:
+        await update.message.reply_text("💬 ব্যবহার: /chat USER_ID")
+        return
+    try:
+        target = int(context.args[0])
+    except Exception:
+        await update.message.reply_text("❌ Invalid USER_ID")
+        return
+    if not get_user(target):
+        await update.message.reply_text("❌ এই USER_ID database-এ নেই।")
+        return
+    conn = db()
+    conn.execute("INSERT OR REPLACE INTO direct_chat_sessions(admin_id,user_id,active,created_at,updated_at) VALUES(?,?,?,?,?)", (ADMIN_ID,target,1,now(),now()))
+    conn.commit(); conn.close()
+    context.user_data["direct_chat_target"] = target
+    await update.message.reply_text(f"💬 <b>Direct Chat Active</b>\n\n👤 User ID: <code>{target}</code>\n\nএখন তোমার পাঠানো text ওই user-এর কাছে যাবে। বন্ধ করতে /endchat", parse_mode=ParseMode.HTML)
+
+
+async def admin_direct_chat_end(update, context):
+    if not is_admin(update.effective_user.id):
+        return
+    context.user_data.pop("direct_chat_target", None)
+    conn = db(); conn.execute("UPDATE direct_chat_sessions SET active=0,updated_at=? WHERE admin_id=?", (now(),ADMIN_ID)); conn.commit(); conn.close()
+    await update.message.reply_text("🛑 Direct Chat বন্ধ হয়েছে।")
+
+
+async def admin_direct_chat_text(update, context):
+    if update.effective_user.id != ADMIN_ID or not update.message or not update.message.text:
+        return False
+    if context.user_data.get("broadcast_mode"):
+        return False
+    target = context.user_data.get("direct_chat_target")
+    if not target:
+        return False
+    try:
+        await context.bot.send_message(target, f"💬 <b>Admin Message</b>\n\n{update.message.text}", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("✅ Message sent.")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Send failed: {str(e)[:500]}")
+    raise ApplicationHandlerStop
+
+
+async def user_direct_chat_reply(update, context):
+    if not update.message or not update.message.text or update.effective_user.id == ADMIN_ID:
+        return False
+    conn = db()
+    row = conn.execute("SELECT admin_id FROM direct_chat_sessions WHERE user_id=? AND active=1", (update.effective_user.id,)).fetchone()
+    conn.close()
+    if not row:
+        return False
+    try:
+        await context.bot.send_message(ADMIN_ID, f"↩️ <b>User Reply</b>\n\n👤 ID: <code>{update.effective_user.id}</code>\n👤 @{update.effective_user.username or 'N/A'}\n\n{update.message.text}", parse_mode=ParseMode.HTML)
+        await update.message.reply_text("✅ আপনার মেসেজ Admin-এর কাছে পাঠানো হয়েছে।")
+    except Exception:
+        pass
+    raise ApplicationHandlerStop
 
 
 # ============================================================
@@ -2884,6 +3411,69 @@ async def tool_callback(update, context):
         return
 
     data = query.data
+
+    if data == "dl:menu":
+        await safe_answer(query)
+        await safe_edit(query, "📥 <b>Video Downloader</b>\n\nLink পাঠাতে নিচের button চাপুন বা সরাসরি URL পাঠান।", InlineKeyboardMarkup([[InlineKeyboardButton("🔗 Send URL", callback_data="dl:send")], [InlineKeyboardButton("📜 History", callback_data="dl:history"), InlineKeyboardButton("📊 Stats", callback_data="dl:stats")], [InlineKeyboardButton("🏠 Main Menu", callback_data="main")]]))
+        return
+
+    if data == "dl:send":
+        context.user_data["downloader_waiting_url"] = True
+        await safe_edit(query, "🔗 <b>Video URL পাঠান</b>\n\nYouTube/Facebook/Instagram/TikTok বা supported public URL দিন।", back_keyboard("main"))
+        return
+
+    if data == "dl:history":
+        await downloader_history_message(update, uid)
+        return
+
+    if data == "dl:stats":
+        stats = dl_stats(uid)
+        await safe_edit(query, f"📊 <b>MY DOWNLOADER STATS</b>\n\n📥 Total: <b>{stats['total']}</b>\n✅ Success: <b>{stats['success']}</b>\n❌ Failed: <b>{stats['failed']}</b>\n🛑 Cancelled: <b>{stats['cancelled']}</b>", back_keyboard("main"))
+        return
+
+    if data.startswith("dlq:") or data.startswith("dla:"):
+        parts = data.split(":")
+        job_key = parts[1]
+        cache = DL_URL_CACHE.get(job_key)
+        if not cache or cache.get("user_id") != uid:
+            await safe_edit(query, "❌ এই download option আর available নেই। আবার URL পাঠান।", back_keyboard("main"))
+            return
+        kind = "audio" if data.startswith("dla:") else "video"
+        quality = "audio" if kind == "audio" else parts[2]
+        job = dl_make_job(uid, cache, kind, quality)
+        await safe_edit(query, f"📋 <b>Queued</b>\n\n🎬 {dl_clean_title(job['title'])}\n🎞️ {quality}\n\nQueue-তে যোগ করা হয়েছে।")
+        if DL_QUEUE is None:
+            globals()["DL_QUEUE"] = asyncio.Queue()
+        await DL_QUEUE.put(job)
+        return
+
+    if data.startswith("dlcancel:"):
+        job_id = data.split(":",1)[1]
+        job = DL_JOBS.get(job_id)
+        if job and job.get("user_id") == uid and job.get("status") in ("queued","downloading"):
+            job["cancel"].set()
+            if job.get("status") == "queued":
+                job["status"] = "cancelled"
+                dl_job_db(job)
+                dl_history_add(uid, job["url"], job["title"], job["kind"], job["quality"], "", "cancelled", "Cancelled by user")
+            await safe_edit(query, "🛑 <b>Download Cancelled</b>", back_keyboard("main"))
+        else:
+            await safe_answer(query, "Already finished or unavailable.")
+        return
+
+    if data.startswith("dlretry:"):
+        old_id = data.split(":",1)[1]
+        old = DL_JOBS.get(old_id)
+        if not old or old.get("user_id") != uid:
+            await safe_answer(query, "Retry unavailable", True)
+            return
+        cache = {"url": old["url"], "title": old["title"], "user_id": uid}
+        job = dl_make_job(uid, cache, old["kind"], old["quality"])
+        if DL_QUEUE is None:
+            globals()["DL_QUEUE"] = asyncio.Queue()
+        await DL_QUEUE.put(job)
+        await safe_edit(query, "🔄 <b>Retry added to queue.</b>", back_keyboard("main"))
+        return
 
     if data == "main":
         await safe_edit(
@@ -5428,6 +6018,8 @@ async def cancel(update, context):
         "waiting",
         "broadcast_mode",
         "broadcast_target",
+        "downloader_waiting_url",
+        "direct_chat_target",
     ]
 
     for key in keys:
@@ -5463,6 +6055,24 @@ async def text_router(update, context):
         await update.message.reply_text(
             tr(uid, "banned"),
         )
+        return
+
+    # Admin direct-chat user replies
+    if await user_direct_chat_reply(update, context):
+        return
+
+    # Downloader URL / pending URL
+    if context.user_data.get("downloader_waiting_url"):
+        text_value = update.message.text.strip()
+        if dl_is_url(text_value):
+            await downloader_show_info(update, context, text_value)
+        else:
+            await update.message.reply_text("❌ Valid http/https URL দিন।")
+        return
+
+    # URL auto-detection
+    if dl_is_url(update.message.text.strip()):
+        await downloader_show_info(update, context, update.message.text.strip())
         return
 
     # Pending file input
@@ -5530,6 +6140,10 @@ async def text_router(update, context):
 
     if text == "🧮 Utility Tools":
         await utility_menu(update, context)
+        return
+
+    if text == "📥 Video Downloader":
+        await downloader_menu(update, context)
         return
 
     if text == "💎 Premium":
@@ -5646,10 +6260,16 @@ async def error_handler(
 # ============================================================
 
 async def post_init(application):
+    global DL_QUEUE
+    if DL_QUEUE is None:
+        DL_QUEUE = asyncio.Queue()
     asyncio.create_task(
         premium_expiry_watcher(
             application
         )
+    )
+    asyncio.create_task(
+        downloader_worker(application)
     )
 
 
@@ -5707,6 +6327,27 @@ def main():
         CommandHandler(
             "done",
             done_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "chat",
+            admin_direct_chat_start,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "endchat",
+            admin_direct_chat_end,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "downloadstats",
+            downloader_admin_stats,
         )
     )
 
@@ -5830,6 +6471,15 @@ def main():
         )
     )
 
+    # Admin direct chat MUST run before broadcast/normal text
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.User(user_id=ADMIN_ID),
+            admin_direct_chat_text,
+        ),
+        group=0,
+    )
+
     # Broadcast text MUST run before normal text
     application.add_handler(
         MessageHandler(
@@ -5843,6 +6493,15 @@ def main():
         group=0,
     )
 
+    # User replies in Admin Direct Chat
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            user_direct_chat_reply,
+        ),
+        group=1,
+    )
+
     # Normal text
     application.add_handler(
         MessageHandler(
@@ -5850,7 +6509,7 @@ def main():
             & ~filters.COMMAND,
             text_router,
         ),
-        group=1,
+        group=2,
     )
 
     # Documents
