@@ -32,6 +32,7 @@ from collections import deque
 from datetime import datetime, date, timedelta
 from functools import wraps
 from urllib.parse import quote, unquote
+from html import escape
 
 import fitz
 import qrcode
@@ -101,7 +102,8 @@ MONTHLY_PRICE = 150
 
 # Payment number code-এর ভিতরে রাখা হয়েছে।
 # নিজের নম্বর চাইলে শুধু এখানেই পরিবর্তন করবে।
-NAGAD_NUMBER = "01726836941"
+BKASH_NUMBER = os.getenv("BKASH_NUMBER", "CHANGE_THIS_BKASH_NUMBER").strip()
+NAGAD_NUMBER = os.getenv("NAGAD_NUMBER", "CHANGE_THIS_NAGAD_NUMBER").strip()
 
 
 # ============================================================
@@ -214,6 +216,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             user_id INTEGER,
             plan TEXT,
+            transaction_id TEXT DEFAULT '',
             status TEXT DEFAULT 'pending',
             created_at TEXT,
             updated_at TEXT
@@ -232,6 +235,8 @@ def init_db():
             admin_id INTEGER,
             target TEXT,
             message TEXT,
+            source_chat_id INTEGER DEFAULT 0,
+            source_message_id INTEGER DEFAULT 0,
             status TEXT DEFAULT 'running',
             total INTEGER DEFAULT 0,
             sent INTEGER DEFAULT 0,
@@ -301,6 +306,24 @@ def init_db():
         );
         """
     )
+
+    # Backward-compatible Broadcast schema migration for existing databases.
+    try:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(broadcast_jobs)").fetchall()}
+        if "source_chat_id" not in columns:
+            conn.execute("ALTER TABLE broadcast_jobs ADD COLUMN source_chat_id INTEGER DEFAULT 0")
+        if "source_message_id" not in columns:
+            conn.execute("ALTER TABLE broadcast_jobs ADD COLUMN source_message_id INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
+    # Backward-compatible Premium schema migration.
+    try:
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(premium_requests)").fetchall()}
+        if "transaction_id" not in columns:
+            conn.execute("ALTER TABLE premium_requests ADD COLUMN transaction_id TEXT DEFAULT ''")
+    except Exception:
+        pass
 
     conn.commit()
     conn.close()
@@ -1292,7 +1315,7 @@ async def admin_direct_chat_end(update, context):
 async def admin_direct_chat_text(update, context):
     if update.effective_user.id != ADMIN_ID or not update.message or not update.message.text:
         return False
-    if context.user_data.get("broadcast_mode"):
+    if context.user_data.get("broadcast_mode") or context.user_data.get("ticket_reply_id"):
         return False
     target = context.user_data.get("direct_chat_target")
     if not target:
@@ -2943,7 +2966,18 @@ async def history(update, context):
 # ============================================================
 
 async def premium(update, context):
-    await update.message.reply_text(
+    uid = update.effective_user.id
+    if is_premium(uid):
+        row = get_user(uid)
+        await update.effective_message.reply_text(
+            "💎 <b>PREMIUM ACTIVE</b>\n\n"
+            f"⏰ Valid Until: <code>{row['premium_until']}</code>\n\n"
+            "আপনার Premium ইতোমধ্যে চালু আছে।",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    await update.effective_message.reply_text(
         "💎 <b>PREMIUM SYSTEM</b>\n\n"
         "🚀 Premium সুবিধা:\n"
         "• বেশি File Limit\n"
@@ -2953,111 +2987,106 @@ async def premium(update, context):
         f"📅 Weekly: <b>{WEEKLY_PRICE} টাকা</b>\n"
         f"📅 Monthly: <b>{MONTHLY_PRICE} টাকা</b>\n\n"
         f"💳 bKash: <code>{BKASH_NUMBER}</code>\n"
-        f"💳 Nagad: <code>{NAGAD_NUMBER}</code>",
+        f"💳 Nagad: <code>{NAGAD_NUMBER}</code>\n\n"
+        "💡 পেমেন্ট করার পর নিচের প্ল্যান নির্বাচন করুন।\n"
+        "তারপর আপনার Transaction ID পাঠান।",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(
+        reply_markup=InlineKeyboardMarkup([
             [
-                [
-                    InlineKeyboardButton(
-                        "💎 Weekly Request",
-                        callback_data="premium:weekly",
-                    ),
-                    InlineKeyboardButton(
-                        "💎 Monthly Request",
-                        callback_data="premium:monthly",
-                    ),
-                ],
-                [
-                    InlineKeyboardButton(
-                        "📊 Premium Status",
-                        callback_data="premium:status",
-                    ),
-                ],
-            ]
-        ),
+                InlineKeyboardButton("💎 Weekly", callback_data="premium:weekly"),
+                InlineKeyboardButton("💎 Monthly", callback_data="premium:monthly"),
+            ],
+            [InlineKeyboardButton("📊 Premium Status", callback_data="premium:status")],
+        ]),
     )
 
 
-async def create_premium_request(
-    update,
-    plan,
-):
+async def create_premium_request(update, plan, transaction_id=""):
     uid = update.effective_user.id
-
-    price = (
-        WEEKLY_PRICE
-        if plan == "weekly"
-        else MONTHLY_PRICE
-    )
+    plan = "weekly" if plan == "weekly" else "monthly"
+    price = WEEKLY_PRICE if plan == "weekly" else MONTHLY_PRICE
 
     conn = db()
+    existing = conn.execute(
+        """SELECT * FROM premium_requests
+           WHERE user_id=? AND status='pending'
+           ORDER BY id DESC LIMIT 1""",
+        (uid,),
+    ).fetchone()
+
+    if existing:
+        conn.close()
+        await update.effective_message.reply_text(
+            "⏳ আপনার একটি Premium Request ইতোমধ্যে pending আছে।\n\n"
+            f"🆔 Request: <code>#{existing['id']}</code>\n"
+            "Admin approval-এর জন্য অপেক্ষা করুন।",
+            parse_mode=ParseMode.HTML,
+        )
+        return existing["id"]
 
     conn.execute(
-        """
-        INSERT INTO premium_requests
-        (user_id, plan, status, created_at, updated_at)
-        VALUES (?, ?, 'pending', ?, ?)
-        """,
-        (
-            uid,
-            plan,
-            now(),
-            now(),
-        ),
+        """INSERT INTO premium_requests
+           (user_id, plan, transaction_id, status, created_at, updated_at)
+           VALUES (?, ?, ?, 'pending', ?, ?)""",
+        (uid, plan, transaction_id.strip(), now(), now()),
     )
-
-    request_id = conn.execute(
-        "SELECT last_insert_rowid()"
-    ).fetchone()[0]
-
+    request_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.commit()
     conn.close()
 
-    await update.effective_message.reply_text(
-        "📨 <b>Premium Request Sent!</b>\n\n"
-        f"🆔 Request: <code>#{request_id}</code>\n"
-        f"📦 Plan: <b>{plan.title()}</b>\n"
-        f"💰 Price: <b>{price} টাকা</b>\n\n"
-        "Admin approval-এর জন্য অপেক্ষা করুন।",
-        parse_mode=ParseMode.HTML,
-    )
+    admin_ok = True
+    try:
+        await context_bot_send_premium_request(update, request_id, uid, plan, price, transaction_id)
+    except Exception as e:
+        admin_ok = False
+        print("PREMIUM ADMIN NOTIFICATION ERROR:", repr(e))
 
-    await update.get_bot().send_message(
+    if admin_ok:
+        msg = (
+            "✅ <b>Premium Request জমা হয়েছে!</b>\n\n"
+            f"🆔 Request: <code>#{request_id}</code>\n"
+            f"📦 Plan: <b>{plan.title()}</b>\n"
+            f"💰 Price: <b>{price} টাকা</b>\n"
+            f"🧾 Transaction ID: <code>{escape(transaction_id)}</code>\n\n"
+            "Admin এখন আপনার payment যাচাই করে Premium চালু করবেন।"
+        )
+    else:
+        msg = (
+            "⚠️ <b>Request সংরক্ষিত হয়েছে</b>\n\n"
+            f"🆔 Request: <code>#{request_id}</code>\n"
+            f"🧾 Transaction ID: <code>{escape(transaction_id)}</code>\n\n"
+            "Admin notification পাঠাতে সমস্যা হয়েছে। Request হারায়নি; Admin Panel থেকে request দেখা যাবে।"
+        )
+
+    await update.effective_message.reply_text(msg, parse_mode=ParseMode.HTML)
+    return request_id
+
+
+async def context_bot_send_premium_request(update, request_id, uid, plan, price, transaction_id):
+    bot = update.get_bot()
+    await bot.send_message(
         ADMIN_ID,
-        "💎 <b>NEW PREMIUM REQUEST</b>\n\n"
+        "💎 <b>NEW PREMIUM PAYMENT</b>\n\n"
         f"🆔 Request: <code>#{request_id}</code>\n"
-        f"👤 User: <code>{uid}</code>\n"
-        f"📦 Plan: <b>{plan}</b>\n"
-        f"💰 Price: <b>{price} টাকা</b>",
+        f"👤 User ID: <code>{uid}</code>\n"
+        f"📦 Plan: <b>{plan.title()}</b>\n"
+        f"💰 Price: <b>{price} টাকা</b>\n"
+        f"🧾 Transaction ID: <code>{escape(transaction_id)}</code>",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "✅ APPROVE",
-                        callback_data=f"premapprove:{request_id}",
-                    ),
-                    InlineKeyboardButton(
-                        "❌ REJECT",
-                        callback_data=f"premreject:{request_id}",
-                    ),
-                ]
-            ]
-        ),
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ APPROVE", callback_data=f"premapprove:{request_id}"),
+            InlineKeyboardButton("❌ REJECT", callback_data=f"premreject:{request_id}"),
+        ]]),
     )
 
 
 async def premium_status(update, context):
     uid = update.effective_user.id
-
     row = get_user(uid)
-
     if is_premium(uid):
-        until = row["premium_until"]
-
         await update.effective_message.reply_text(
             "💎 <b>PREMIUM ACTIVE</b>\n\n"
-            f"⏰ Valid Until:\n<code>{until}</code>",
+            f"⏰ Valid Until: <code>{row['premium_until']}</code>",
             parse_mode=ParseMode.HTML,
         )
     else:
@@ -3110,65 +3139,168 @@ async def settings(update, context):
 # ============================================================
 
 async def support(update, context):
+    context.user_data.pop("ticket_mode", None)
     await update.message.reply_text(
         "🆘 <b>SUPPORT CENTER</b>\n\n"
-        "কোনো সমস্যা হলে Support-এ যোগাযোগ করুন।\n\n"
-        f"👨‍💻 Support: @{SUPPORT_USERNAME}",
+        "🎫 Ticket খুলে আপনার সমস্যাটি সরাসরি Admin-কে পাঠাতে পারবেন।\n"
+        "💬 চাইলে সরাসরি Support-এও যোগাযোগ করতে পারবেন।",
         parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(
+        reply_markup=InlineKeyboardMarkup([
             [
-                [
-                    InlineKeyboardButton(
-                        "💬 Contact Support",
-                        url=f"https://t.me/{SUPPORT_USERNAME}",
-                    )
-                ]
-            ]
-        ),
+                InlineKeyboardButton("🎫 Open Ticket", callback_data="ticket:new"),
+                InlineKeyboardButton("📋 My Tickets", callback_data="ticket:mine"),
+            ],
+            [
+                InlineKeyboardButton(
+                    "💬 Contact Support",
+                    url=f"https://t.me/{SUPPORT_USERNAME}",
+                )
+            ],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data="main")],
+        ]),
     )
 
 
 async def support_text(update, context):
+    if not context.user_data.get("ticket_mode"):
+        return False
+
     uid = update.effective_user.id
     text = update.message.text.strip()
 
+    if not text or len(text) > 3500:
+        await update.message.reply_text("❌ Ticket message 1–3500 charactersের মধ্যে দিন।")
+        return True
+
     conn = db()
+    # One active ticket per user; new messages can reopen the active ticket.
+    row = conn.execute(
+        "SELECT id FROM support_tickets WHERE user_id=? AND status='open' ORDER BY id DESC LIMIT 1",
+        (uid,),
+    ).fetchone()
 
-    conn.execute(
-        """
-        INSERT INTO support_tickets
-        (user_id, message, status, created_at)
-        VALUES (?, ?, 'open', ?)
-        """,
-        (
-            uid,
-            text,
-            now(),
-        ),
-    )
-
-    ticket_id = conn.execute(
-        "SELECT last_insert_rowid()"
-    ).fetchone()[0]
+    if row:
+        ticket_id = row["id"]
+        conn.execute(
+            "UPDATE support_tickets SET message=?, created_at=? WHERE id=?",
+            (text, now(), ticket_id),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO support_tickets (user_id, message, status, created_at) VALUES (?, ?, 'open', ?)",
+            (uid, text, now()),
+        )
+        ticket_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     conn.commit()
     conn.close()
+    context.user_data.pop("ticket_mode", None)
 
     await update.message.reply_text(
-        "🎫 <b>Support Ticket Created!</b>\n\n"
+        "🎫 <b>Ticket Submitted!</b>\n\n"
         f"🆔 Ticket: <code>#{ticket_id}</code>\n"
-        "Admin আপনার মেসেজ দেখবেন।",
+        "✅ আপনার সমস্যাটি Admin-এর কাছে পাঠানো হয়েছে।\n"
+        "📩 উত্তর এলে এই বটেই পাবেন।",
         parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard(),
     )
 
-    await context.bot.send_message(
-        ADMIN_ID,
-        "🆘 <b>NEW SUPPORT TICKET</b>\n\n"
-        f"🎫 Ticket: <code>#{ticket_id}</code>\n"
-        f"👤 User: <code>{uid}</code>\n\n"
-        f"{text[:3000]}",
-        parse_mode=ParseMode.HTML,
-    )
+    try:
+        await context.bot.send_message(
+            ADMIN_ID,
+            "🆘 <b>NEW / UPDATED SUPPORT TICKET</b>\n\n"
+            f"🎫 Ticket: <code>#{ticket_id}</code>\n"
+            f"👤 User: <code>{uid}</code>\n\n"
+            f"{escape(text[:3000])}",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("💬 Reply", callback_data=f"ticket:reply:{ticket_id}"),
+                InlineKeyboardButton("✅ Close", callback_data=f"ticket:close:{ticket_id}"),
+            ]]),
+        )
+    except Exception:
+        pass
+
+    return True
+
+
+async def my_tickets(update, context):
+    uid = update.effective_user.id
+    conn = db()
+    rows = conn.execute(
+        "SELECT * FROM support_tickets WHERE user_id=? ORDER BY id DESC LIMIT 10",
+        (uid,),
+    ).fetchall()
+    conn.close()
+
+    if not rows:
+        text = "📋 <b>My Tickets</b>\n\nকোনো ticket পাওয়া যায়নি।"
+    else:
+        text = "📋 <b>MY TICKETS</b>\n\n"
+        for row in rows:
+            status = "🟢 OPEN" if row["status"] == "open" else "⚪ CLOSED"
+            text += f"🎫 <b>#{row['id']}</b> — {status}\n{escape(row['message'][:250])}\n\n"
+
+    if update.callback_query:
+        await safe_edit(update.callback_query, text, InlineKeyboardMarkup([[InlineKeyboardButton("🎫 New Ticket", callback_data="ticket:new")],[InlineKeyboardButton("🏠 Main Menu", callback_data="main")]]))
+    else:
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+
+@admin_only
+async def reply_ticket(update, context):
+    if len(context.args) < 2:
+        await update.message.reply_text("ব্যবহার: /replyticket TICKET_ID আপনার উত্তর")
+        return
+    try:
+        ticket_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Ticket ID সঠিক নয়।")
+        return
+    reply = " ".join(context.args[1:]).strip()
+    conn = db()
+    row = conn.execute("SELECT * FROM support_tickets WHERE id=?", (ticket_id,)).fetchone()
+    conn.close()
+    if not row:
+        await update.message.reply_text("❌ Ticket পাওয়া যায়নি।")
+        return
+    try:
+        await context.bot.send_message(
+            row["user_id"],
+            "💬 <b>Support Reply</b>\n\n"
+            f"🎫 Ticket: <code>#{ticket_id}</code>\n"
+            f"{escape(reply[:3500])}",
+            parse_mode=ParseMode.HTML,
+        )
+        await update.message.reply_text(f"✅ Ticket #{ticket_id}-এ উত্তর পাঠানো হয়েছে।")
+    except Exception as e:
+        await update.message.reply_text(f"❌ উত্তর পাঠানো যায়নি: {escape(str(e)[:300])}", parse_mode=ParseMode.HTML)
+
+
+@admin_only
+async def close_ticket(update, context):
+    if not context.args:
+        await update.message.reply_text("ব্যবহার: /closeticket TICKET_ID")
+        return
+    try:
+        ticket_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Ticket ID সঠিক নয়।")
+        return
+    conn = db()
+    row = conn.execute("SELECT user_id FROM support_tickets WHERE id=?", (ticket_id,)).fetchone()
+    if not row:
+        conn.close()
+        await update.message.reply_text("❌ Ticket পাওয়া যায়নি।")
+        return
+    conn.execute("UPDATE support_tickets SET status='closed' WHERE id=?", (ticket_id,))
+    conn.commit()
+    conn.close()
+    try:
+        await context.bot.send_message(row["user_id"], f"✅ আপনার Ticket <code>#{ticket_id}</code> বন্ধ করা হয়েছে।", parse_mode=ParseMode.HTML)
+    except Exception:
+        pass
+    await update.message.reply_text(f"✅ Ticket #{ticket_id} closed.")
 
 
 # ============================================================
@@ -3532,25 +3664,23 @@ async def tool_callback(update, context):
     if data.startswith("premium:"):
         action = data.split(":", 1)[1]
 
-        if action == "weekly":
-            await create_premium_request(
-                update,
-                "weekly",
-            )
-            return
-
-        if action == "monthly":
-            await create_premium_request(
-                update,
-                "monthly",
+        if action in ("weekly", "monthly"):
+            context.user_data["premium_pending_plan"] = action
+            price = WEEKLY_PRICE if action == "weekly" else MONTHLY_PRICE
+            await safe_answer(query, "Transaction ID পাঠান।")
+            await safe_edit(
+                query,
+                "🧾 <b>Transaction ID প্রয়োজন</b>\n\n"
+                f"📦 Plan: <b>{action.title()}</b>\n"
+                f"💰 Price: <b>{price} টাকা</b>\n\n"
+                "পেমেন্ট সম্পন্ন করার পর আপনার Transaction ID এখানে পাঠান।\n\n"
+                "❌ বাতিল করতে /cancel লিখুন।"
             )
             return
 
         if action == "status":
-            await premium_status(
-                update,
-                context,
-            )
+            await safe_answer(query)
+            await premium_status(update, context)
             return
 
     if data.startswith("premapprove:"):
@@ -3582,6 +3712,46 @@ async def tool_callback(update, context):
             request_id,
         )
         return
+
+    if data.startswith("ticket:"):
+        parts = data.split(":")
+        action = parts[1] if len(parts) > 1 else ""
+
+        if action == "new":
+            context.user_data["ticket_mode"] = True
+            await safe_edit(
+                query,
+                "🎫 <b>NEW SUPPORT TICKET</b>\n\nআপনার সমস্যাটি একটি মেসেজে লিখে পাঠান।\n\n🛑 বাতিল করতে /cancel দিন।",
+            )
+            return
+
+        if action == "mine":
+            await my_tickets(update, context)
+            return
+
+        if not is_admin(uid):
+            return
+
+        if action == "close" and len(parts) == 3:
+            ticket_id = int(parts[2])
+            conn = db()
+            row = conn.execute("SELECT user_id FROM support_tickets WHERE id=?", (ticket_id,)).fetchone()
+            conn.execute("UPDATE support_tickets SET status='closed' WHERE id=?", (ticket_id,))
+            conn.commit()
+            conn.close()
+            if row:
+                try:
+                    await context.bot.send_message(row["user_id"], f"✅ আপনার Ticket <code>#{ticket_id}</code> বন্ধ করা হয়েছে।", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+            await tickets(update, context)
+            return
+
+        if action == "reply" and len(parts) == 3:
+            ticket_id = int(parts[2])
+            context.user_data["ticket_reply_id"] = ticket_id
+            await safe_edit(query, f"💬 <b>Reply to Ticket #{ticket_id}</b>\n\nএখন আপনার উত্তরটি লিখে পাঠান।\n🛑 /cancel দিয়ে বাতিল করুন.")
+            return
 
     if data.startswith("admin:"):
         if not is_admin(uid):
@@ -5119,6 +5289,45 @@ async def unban(update, context):
     )
 
 
+@admin_only
+async def addpremium(update, context):
+    if len(context.args) < 2:
+        await update.message.reply_text("ব্যবহার: /addpremium USER_ID DAYS")
+        return
+    try:
+        target_id = int(context.args[0])
+        days = int(context.args[1])
+        if days <= 0:
+            raise ValueError
+    except Exception:
+        await update.message.reply_text("❌ USER_ID এবং DAYS সঠিকভাবে দিন।")
+        return
+
+    if not get_user(target_id):
+        await update.message.reply_text("❌ এই User ID bot-এ নেই।")
+        return
+
+    set_premium(target_id, days)
+    row = get_user(target_id)
+    try:
+        await context.bot.send_message(
+            target_id,
+            "🎉 <b>PREMIUM ACTIVATED!</b>\n\n"
+            f"⏰ Duration: <b>{days} Days</b>\n"
+            f"📅 Valid Until: <code>{row['premium_until']}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        user_msg = " এবং User-কে notification পাঠানো হয়েছে।"
+    except Exception as e:
+        print("ADD PREMIUM USER NOTIFY ERROR:", repr(e))
+        user_msg = " কিন্তু User-কে notification পাঠানো যায়নি; Premium database-এ active হয়েছে।"
+
+    await update.message.reply_text(
+        f"✅ User <code>{target_id}</code>-এর Premium {days} দিনের জন্য চালু হয়েছে।{user_msg}",
+        parse_mode=ParseMode.HTML,
+    )
+
+
 # ============================================================
 # PREMIUM ADMIN
 # ============================================================
@@ -5171,12 +5380,14 @@ async def approve_premium(
         days,
     )
 
+    await safe_answer(update.callback_query, "Premium approved.")
     await safe_edit(
         update.callback_query,
         "✅ <b>PREMIUM APPROVED</b>\n\n"
         f"Request #{request_id}\n"
         f"User: <code>{row['user_id']}</code>\n"
-        f"Plan: {row['plan']}",
+        f"Plan: {row['plan']}\n"
+        f"Transaction ID: <code>{row['transaction_id'] or 'N/A'}</code>",
     )
 
     try:
@@ -5223,10 +5434,12 @@ async def reject_premium(
     conn.commit()
     conn.close()
 
+    await safe_answer(update.callback_query, "Premium request rejected.")
     await safe_edit(
         update.callback_query,
         "❌ <b>PREMIUM REQUEST REJECTED</b>\n\n"
-        f"Request #{request_id}",
+        f"Request #{request_id}\n"
+        f"Transaction ID: <code>{row['transaction_id'] or 'N/A'}</code>",
     )
 
     try:
@@ -5462,19 +5675,30 @@ async def tickets(update, context):
             text += (
                 f"#{row['id']} | "
                 f"User: <code>{row['user_id']}</code>\n"
-                f"{row['message'][:300]}\n\n"
+                f"{escape(row['message'][:300])}\n\n"
             )
+
+    ticket_buttons = []
+    for row in rows:
+        ticket_buttons.append([
+            InlineKeyboardButton(f"💬 Reply #{row['id']}", callback_data=f"ticket:reply:{row['id']}"),
+            InlineKeyboardButton(f"✅ Close #{row['id']}", callback_data=f"ticket:close:{row['id']}"),
+        ])
+    ticket_buttons.append([InlineKeyboardButton("🔄 Refresh", callback_data="admin:tickets")])
+    ticket_buttons.append([InlineKeyboardButton("🏠 Main Menu", callback_data="main")])
+    ticket_markup = InlineKeyboardMarkup(ticket_buttons)
 
     if update.callback_query:
         await safe_edit(
             update.callback_query,
             text,
-            admin_keyboard(),
+            ticket_markup,
         )
     else:
         await update.message.reply_text(
             text,
             parse_mode=ParseMode.HTML,
+            reply_markup=ticket_markup,
         )
 
 
@@ -5485,6 +5709,8 @@ async def tickets(update, context):
 def create_broadcast_job(
     target,
     message,
+    source_chat_id=0,
+    source_message_id=0,
 ):
     conn = db()
 
@@ -5518,14 +5744,16 @@ def create_broadcast_job(
     conn.execute(
         """
         INSERT INTO broadcast_jobs
-        (admin_id, target, message, status,
+        (admin_id, target, message, source_chat_id, source_message_id, status,
          total, sent, failed, created_at, updated_at)
-        VALUES (?, ?, ?, 'running', ?, 0, 0, ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'running', ?, 0, 0, ?, ?)
         """,
         (
             ADMIN_ID,
             target,
             message,
+            source_chat_id,
+            source_message_id,
             total,
             now(),
             now(),
@@ -5621,11 +5849,24 @@ async def run_broadcast(
             break
 
         try:
-            await context.bot.send_message(
-                uid,
-                job["message"],
-                parse_mode=ParseMode.HTML,
-            )
+            source_chat_id = int(job["source_chat_id"] or 0)
+            source_message_id = int(job["source_message_id"] or 0)
+
+            if source_chat_id and source_message_id:
+                # Copy the original Telegram message so formatting, entities,
+                # links, emojis, photos, documents, captions, etc. are preserved.
+                await context.bot.copy_message(
+                    chat_id=uid,
+                    from_chat_id=source_chat_id,
+                    message_id=source_message_id,
+                )
+            else:
+                # Backward compatibility for old jobs created before this fix.
+                await context.bot.send_message(
+                    uid,
+                    job["message"],
+                    parse_mode=ParseMode.HTML,
+                )
 
             sent += 1
 
@@ -5789,40 +6030,41 @@ async def broadcast_free(
     )
 
 
-async def broadcast_text_handler(
+async def broadcast_message_handler(
     update,
     context,
 ):
-    if not context.user_data.get(
-        "broadcast_mode"
-    ):
+    if not context.user_data.get("broadcast_mode") or context.user_data.get("ticket_reply_id"):
         return
 
     if update.effective_user.id != ADMIN_ID:
         return
 
-    text = update.message.text.strip()
+    message = update.effective_message
+    if not message:
+        return
 
-    context.user_data[
-        "broadcast_mode"
-    ] = False
+    # Do not accept commands as broadcast content.
+    if message.text and message.text.startswith("/"):
+        return
 
-    target = context.user_data.pop(
-        "broadcast_target",
-        "all",
-    )
+    target = context.user_data.pop("broadcast_target", "all")
+    context.user_data["broadcast_mode"] = False
 
+    raw_text = message.text or message.caption or ""
     job_id = create_broadcast_job(
         target,
-        text,
+        raw_text,
+        source_chat_id=message.chat_id,
+        source_message_id=message.message_id,
     )
 
-    await update.message.reply_text(
+    await message.reply_text(
         "📢 <b>Broadcast Started!</b>\n\n"
         f"🆔 Job ID: <code>#{job_id}</code>\n"
         f"🎯 Target: <b>{target}</b>\n\n"
-        "Progress এবং final report Admin-এ পাঠানো হবে।\n\n"
-        f"Cancel: <code>/cancelbroadcast {job_id}</code>",
+        "✅ আপনার পাঠানো মূল বার্তার ফরম্যাট/লিংক/মিডিয়া অপরিবর্তিত রেখে পাঠানো হবে।\n\n"
+        f"🛑 Cancel: <code>/cancelbroadcast {job_id}</code>",
         parse_mode=ParseMode.HTML,
     )
 
@@ -5936,11 +6178,20 @@ async def retry_broadcast(
         uid = row["user_id"]
 
         try:
-            await context.bot.send_message(
-                uid,
-                job["message"],
-                parse_mode=ParseMode.HTML,
-            )
+            source_chat_id = int(job["source_chat_id"] or 0)
+            source_message_id = int(job["source_message_id"] or 0)
+            if source_chat_id and source_message_id:
+                await context.bot.copy_message(
+                    chat_id=uid,
+                    from_chat_id=source_chat_id,
+                    message_id=source_message_id,
+                )
+            else:
+                await context.bot.send_message(
+                    uid,
+                    job["message"],
+                    parse_mode=ParseMode.HTML,
+                )
             success += 1
 
         except Exception:
@@ -5988,6 +6239,7 @@ async def help_command(update, context):
         "/start — Start Bot\n"
         "/menu — Main Menu\n"
         "/admin — Admin Panel\n"
+        "/addpremium USER_ID DAYS — Admin Premium\n"
         "/done — PDF Merge Complete\n"
         "/doneimages — Images → PDF Complete\n"
         "/cancel — Cancel current mode\n\n"
@@ -6020,6 +6272,7 @@ async def cancel(update, context):
         "broadcast_target",
         "downloader_waiting_url",
         "direct_chat_target",
+        "premium_pending_plan",
     ]
 
     for key in keys:
@@ -6061,6 +6314,17 @@ async def text_router(update, context):
     if await user_direct_chat_reply(update, context):
         return
 
+    # Premium payment Transaction ID
+    premium_plan = context.user_data.get("premium_pending_plan")
+    if premium_plan:
+        transaction_id = update.message.text.strip()
+        if not transaction_id or len(transaction_id) < 3 or len(transaction_id) > 100:
+            await update.message.reply_text("❌ সঠিক Transaction ID দিন।")
+            return
+        context.user_data.pop("premium_pending_plan", None)
+        await create_premium_request(update, premium_plan, transaction_id)
+        return
+
     # Downloader URL / pending URL
     if context.user_data.get("downloader_waiting_url"):
         text_value = update.message.text.strip()
@@ -6074,6 +6338,28 @@ async def text_router(update, context):
     if dl_is_url(update.message.text.strip()):
         await downloader_show_info(update, context, update.message.text.strip())
         return
+
+    # Support ticket reply mode for admin
+    if context.user_data.get("ticket_reply_id") and is_admin(uid):
+        ticket_id = context.user_data.pop("ticket_reply_id")
+        reply = update.message.text.strip()
+        conn = db()
+        row = conn.execute("SELECT user_id FROM support_tickets WHERE id=?", (ticket_id,)).fetchone()
+        conn.close()
+        if not row:
+            await update.message.reply_text("❌ Ticket পাওয়া যায়নি।")
+            return
+        try:
+            await context.bot.send_message(row["user_id"], "💬 <b>Support Reply</b>\n\n" f"🎫 Ticket: <code>#{ticket_id}</code>\n{escape(reply[:3500])}", parse_mode=ParseMode.HTML)
+            await update.message.reply_text(f"✅ Ticket #{ticket_id}-এ উত্তর পাঠানো হয়েছে।")
+        except Exception as e:
+            await update.message.reply_text(f"❌ উত্তর পাঠানো যায়নি: {escape(str(e)[:300])}", parse_mode=ParseMode.HTML)
+        return
+
+    # Support ticket creation mode
+    if context.user_data.get("ticket_mode"):
+        if await support_text(update, context):
+            return
 
     # Pending file input
     if await pending_input_handler(
@@ -6389,6 +6675,13 @@ def main():
 
     application.add_handler(
         CommandHandler(
+            "addpremium",
+            addpremium,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
             "ban",
             ban,
         )
@@ -6419,6 +6712,20 @@ def main():
         CommandHandler(
             "tickets",
             tickets,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "replyticket",
+            reply_ticket,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "closeticket",
+            close_ticket,
         )
     )
 
@@ -6480,15 +6787,13 @@ def main():
         group=0,
     )
 
-    # Broadcast text MUST run before normal text
+    # Broadcast messages MUST run before normal text and support
+    # text, photos, videos, documents, audio and other Telegram messages.
     application.add_handler(
         MessageHandler(
-            filters.TEXT
-            & ~filters.COMMAND
-            & filters.User(
-                user_id=ADMIN_ID
-            ),
-            broadcast_text_handler,
+            ~filters.COMMAND
+            & filters.User(user_id=ADMIN_ID),
+            broadcast_message_handler,
         ),
         group=0,
     )
