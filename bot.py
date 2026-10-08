@@ -1,19 +1,3 @@
-# ============================================================
-# RAFIM GIVEAWAY BOT — FULL & FINAL
-# Existing Features Preserved
-# New Force Join:
-#   CHANNEL_1 = @bdgiveaways24
-#   GROUP_1   = @bdgivewaychat
-#
-# Render Environment Variables:
-# BOT_TOKEN
-# ADMIN_ID
-# CHANNEL_1=@bdgiveaways24
-# GROUP_1=@bdgivewaychat
-# SUPPORT_USERNAME=rafimhossen
-# DB_FILE=giveaway_bot.db
-# ============================================================
-
 import os
 import sqlite3
 import threading
@@ -28,6 +12,16 @@ from flask import Flask
 
 
 # ============================================================
+# RAFIM GIVEAWAY BOT
+# ALL EXISTING FEATURES
+# NEW CHANNEL + GROUP
+#
+# CHANNEL: @bdgiveaways24
+# GROUP:   @bdgivewaychat
+# ============================================================
+
+
+# ============================================================
 # CONFIG
 # ============================================================
 
@@ -38,9 +32,9 @@ try:
 except Exception:
     ADMIN_ID = 0
 
-# NEW CHANNEL + GROUP
-CHANNEL_1 = os.getenv("CHANNEL_1", "@bdgiveaways24").strip()
-GROUP_1 = os.getenv("GROUP_1", "@bdgivewaychat").strip()
+# New Channel + Group
+CHANNEL_1 = "@bdgiveaways24"
+GROUP_1 = "@bdgivewaychat"
 
 SUPPORT_USERNAME = (
     os.getenv("SUPPORT_USERNAME", "rafimhossen")
@@ -49,6 +43,7 @@ SUPPORT_USERNAME = (
 )
 
 DB_FILE = os.getenv("DB_FILE", "giveaway_bot.db")
+
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is missing")
@@ -67,12 +62,13 @@ bot = telebot.TeleBot(
     threaded=True
 )
 
+
+# ============================================================
+# FLASK
+# ============================================================
+
 app = Flask(__name__)
 
-
-# ============================================================
-# FLASK / RENDER HEALTH
-# ============================================================
 
 @app.route("/")
 def home():
@@ -86,6 +82,7 @@ def health():
 
 def run_flask():
     port = int(os.getenv("PORT", "10000"))
+
     app.run(
         host="0.0.0.0",
         port=port,
@@ -106,12 +103,16 @@ def db():
         check_same_thread=False,
         timeout=30
     )
+
     conn.row_factory = sqlite3.Row
+
     return conn
 
 
 def init_db():
+
     with db_lock:
+
         conn = db()
         cur = conn.cursor()
 
@@ -157,6 +158,13 @@ def init_db():
             )
         """)
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS daily_claims (
+                user_id INTEGER PRIMARY KEY,
+                claim_date TEXT
+            )
+        """)
+
         conn.commit()
         conn.close()
 
@@ -177,7 +185,9 @@ broadcast_running = False
 # ============================================================
 
 TEXT = {
+
     "bn": {
+
         "join_required":
             "🚨 <b>প্রথমে আমাদের Channel এবং Group-এ Join করুন!</b>\n\n"
             "👇 Join করার পর নিচের <b>Verify</b> বাটনে চাপুন।",
@@ -212,16 +222,12 @@ TEXT = {
             "🎁 Reward: <b>{reward}</b>\n\n"
             "✅ আপনার Reward সফলভাবে Claim হয়েছে।",
 
-        "daily":
-            "🎁 <b>Daily Giveaway</b>\n\n"
-            "আজকের Daily Giveaway Claim করার চেষ্টা করুন!",
-
         "daily_done":
             "⚠️ আপনি আজকের Daily Giveaway ইতিমধ্যে Claim করেছেন।",
 
         "daily_success":
             "🎉 <b>Daily Giveaway Claimed!</b>\n\n"
-            "🎁 আপনার Daily Reward যোগ করা হয়েছে।",
+            "🎁 আপনার Daily Reward সফলভাবে Claim হয়েছে।",
 
         "status":
             "📊 <b>My Status</b>\n\n"
@@ -242,9 +248,6 @@ TEXT = {
         "settings":
             "⚙️ <b>Settings</b>\n\n"
             "আপনার Language নির্বাচন করুন।",
-
-        "language_changed":
-            "✅ Language successfully changed.",
 
         "admin_only":
             "⛔ এই অপশনটি শুধুমাত্র Admin-এর জন্য।",
@@ -274,10 +277,11 @@ TEXT = {
 
         "admin_panel":
             "👑 <b>Admin Panel</b>\n\n"
-            "নিচের অপশন থেকে নির্বাচন করুন।",
+            "নিচের অপশন থেকে নির্বাচন করুন।"
     },
 
     "en": {
+
         "join_required":
             "🚨 <b>Join our Channel and Group first!</b>\n\n"
             "👇 After joining, press <b>Verify</b>.",
@@ -312,16 +316,12 @@ TEXT = {
             "🎁 Reward: <b>{reward}</b>\n\n"
             "✅ Your reward has been successfully claimed.",
 
-        "daily":
-            "🎁 <b>Daily Giveaway</b>\n\n"
-            "Try to claim today's Daily Giveaway!",
-
         "daily_done":
             "⚠️ You have already claimed today's Daily Giveaway.",
 
         "daily_success":
             "🎉 <b>Daily Giveaway Claimed!</b>\n\n"
-            "🎁 Your Daily Reward has been added.",
+            "🎁 Your Daily Reward has been claimed.",
 
         "status":
             "📊 <b>My Status</b>\n\n"
@@ -335,16 +335,13 @@ TEXT = {
             "ℹ️ <b>Help</b>\n\n"
             "🔑 Redeem Code — Redeem Giveaway Code\n"
             "🎁 Daily Giveaway — Claim Daily Reward\n"
-            "📊 My Status — View your Account Status\n"
+            "📊 My Status — View Account Status\n"
             "⚙️ Settings — Change Language\n\n"
             "🆘 Support: @{support}",
 
         "settings":
             "⚙️ <b>Settings</b>\n\n"
             "Choose your language.",
-
-        "language_changed":
-            "✅ Language successfully changed.",
 
         "admin_only":
             "⛔ This option is only for Admin.",
@@ -374,7 +371,7 @@ TEXT = {
 
         "admin_panel":
             "👑 <b>Admin Panel</b>\n\n"
-            "Choose an option below.",
+            "Choose an option below."
     }
 }
 
@@ -384,12 +381,16 @@ TEXT = {
 # ============================================================
 
 def get_lang(user_id):
+
     with db_lock:
+
         conn = db()
+
         row = conn.execute(
             "SELECT lang FROM user_lang WHERE user_id=?",
             (user_id,)
         ).fetchone()
+
         conn.close()
 
     if row and row["lang"] in ("bn", "en"):
@@ -399,30 +400,46 @@ def get_lang(user_id):
 
 
 def set_lang(user_id, lang):
+
     with db_lock:
+
         conn = db()
+
         conn.execute("""
             INSERT INTO user_lang(user_id, lang)
             VALUES (?, ?)
+
             ON CONFLICT(user_id)
             DO UPDATE SET lang=excluded.lang
-        """, (user_id, lang))
+        """, (
+            user_id,
+            lang
+        ))
+
         conn.commit()
         conn.close()
 
 
 def tr(user_id, key, **kwargs):
+
     lang = get_lang(user_id)
-    value = TEXT[lang].get(key, TEXT["bn"].get(key, key))
+
+    value = TEXT[lang].get(
+        key,
+        TEXT["bn"].get(key, key)
+    )
+
     return value.format(**kwargs)
 
 
 # ============================================================
-# USERS
+# USER DATABASE
 # ============================================================
 
 def save_user(user):
+
     with db_lock:
+
         conn = db()
 
         conn.execute("""
@@ -434,8 +451,11 @@ def save_user(user):
                 joined_at,
                 last_seen
             )
+
             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+
             ON CONFLICT(user_id)
+
             DO UPDATE SET
                 username=excluded.username,
                 first_name=excluded.first_name,
@@ -453,26 +473,39 @@ def save_user(user):
 
 
 def is_banned(user_id):
+
     with db_lock:
+
         conn = db()
+
         row = conn.execute(
             "SELECT banned FROM users WHERE user_id=?",
             (user_id,)
         ).fetchone()
+
         conn.close()
 
-    return bool(row and row["banned"])
+    return bool(
+        row and row["banned"]
+    )
 
 
 def all_user_ids():
+
     with db_lock:
+
         conn = db()
+
         rows = conn.execute(
             "SELECT user_id FROM users WHERE banned=0"
         ).fetchall()
+
         conn.close()
 
-    return [row["user_id"] for row in rows]
+    return [
+        row["user_id"]
+        for row in rows
+    ]
 
 
 # ============================================================
@@ -484,6 +517,7 @@ def is_admin(user_id):
 
 
 def admin_keyboard():
+
     kb = types.ReplyKeyboardMarkup(
         resize_keyboard=True,
         row_width=2
@@ -512,12 +546,14 @@ def admin_keyboard():
 
 
 def user_keyboard(lang="bn"):
+
     kb = types.ReplyKeyboardMarkup(
         resize_keyboard=True,
         row_width=2
     )
 
     if lang == "en":
+
         kb.add(
             types.KeyboardButton("🔑 Redeem Code"),
             types.KeyboardButton("⚙️ Settings")
@@ -533,6 +569,7 @@ def user_keyboard(lang="bn"):
         )
 
     else:
+
         kb.add(
             types.KeyboardButton("🔑 কোড রিডিম"),
             types.KeyboardButton("⚙️ সেটিংস")
@@ -554,43 +591,34 @@ def user_keyboard(lang="bn"):
 # FORCE JOIN
 # ============================================================
 
-def normalize_chat(value):
-    value = str(value).strip()
-
-    if value.startswith("https://t.me/"):
-        value = value.replace("https://t.me/", "", 1)
-
-    if value.startswith("http://t.me/"):
-        value = value.replace("http://t.me/", "", 1)
-
-    if value.startswith("t.me/"):
-        value = value.replace("t.me/", "", 1)
-
-    if value and not value.startswith("@") and not value.startswith("-100"):
-        value = "@" + value
-
-    return value
-
-
-CHANNEL_CHAT = normalize_chat(CHANNEL_1)
-GROUP_CHAT = normalize_chat(GROUP_1)
+CHANNEL_CHAT = "@bdgiveaways24"
+GROUP_CHAT = "@bdgivewaychat"
 
 
 def get_member(chat_id, user_id):
+
     try:
+
         return bot.get_chat_member(
             chat_id,
             user_id
         )
+
     except Exception:
+
         return None
 
 
 def valid_member(member):
+
     if not member:
         return False
 
-    status = getattr(member, "status", "")
+    status = getattr(
+        member,
+        "status",
+        ""
+    )
 
     if status in (
         "creator",
@@ -600,14 +628,20 @@ def valid_member(member):
         return True
 
     if status == "restricted":
+
         return bool(
-            getattr(member, "is_member", False)
+            getattr(
+                member,
+                "is_member",
+                False
+            )
         )
 
     return False
 
 
 def check_membership(user_id):
+
     channel_member = get_member(
         CHANNEL_CHAT,
         user_id
@@ -624,8 +658,15 @@ def check_membership(user_id):
     )
 
 
+# ============================================================
+# NEW JOIN BUTTONS
+# ============================================================
+
 def join_keyboard():
-    kb = types.InlineKeyboardMarkup(row_width=1)
+
+    kb = types.InlineKeyboardMarkup(
+        row_width=1
+    )
 
     kb.add(
         types.InlineKeyboardButton(
@@ -652,19 +693,25 @@ def join_keyboard():
 
 
 def send_join_message(chat_id):
+
     bot.send_message(
         chat_id,
-        TEXT[get_lang(chat_id)]["join_required"],
+        tr(
+            chat_id,
+            "join_required"
+        ),
         reply_markup=join_keyboard()
     )
 
 
 # ============================================================
-# ADMIN ALERT
+# ADMIN NEW USER ALERT
 # ============================================================
 
 def admin_new_user_alert(user):
+
     try:
+
         username = (
             f"@{user.username}"
             if user.username
@@ -678,8 +725,9 @@ def admin_new_user_alert(user):
 
         bot.send_message(
             ADMIN_ID,
+
             "🆕 <b>New User Verified</b>\n\n"
-            f"👤 Name: {name}\n"
+            f"👤 Name: {name or 'Unknown'}\n"
             f"🔗 Username: {username}\n"
             f"🆔 User ID: <code>{user.id}</code>"
         )
@@ -689,38 +737,53 @@ def admin_new_user_alert(user):
 
 
 # ============================================================
-# /START
+# START
 # ============================================================
 
 @bot.message_handler(commands=["start"])
 def start_command(message):
+
     save_user(message.from_user)
 
     user_id = message.from_user.id
 
     if is_banned(user_id):
+
         bot.send_message(
             user_id,
             "⛔ You are banned from using this bot."
         )
+
         return
 
     if is_admin(user_id):
+
         bot.send_message(
             user_id,
-            tr(user_id, "admin_panel"),
+            tr(
+                user_id,
+                "admin_panel"
+            ),
             reply_markup=admin_keyboard()
         )
+
         return
 
     if not check_membership(user_id):
+
         send_join_message(user_id)
+
         return
 
     bot.send_message(
         user_id,
-        tr(user_id, "main"),
-        reply_markup=user_keyboard(get_lang(user_id))
+        tr(
+            user_id,
+            "main"
+        ),
+        reply_markup=user_keyboard(
+            get_lang(user_id)
+        )
     )
 
 
@@ -729,21 +792,27 @@ def start_command(message):
 # ============================================================
 
 @bot.callback_query_handler(
-    func=lambda call: call.data == "verify_join"
+    func=lambda call:
+        call.data == "verify_join"
 )
 def verify_join(call):
+
     user = call.from_user
+
     save_user(user)
 
     if is_banned(user.id):
+
         bot.answer_callback_query(
             call.id,
             "You are banned.",
             show_alert=True
         )
+
         return
 
     if check_membership(user.id):
+
         bot.answer_callback_query(
             call.id,
             "Verified successfully!",
@@ -751,10 +820,12 @@ def verify_join(call):
         )
 
         try:
+
             bot.delete_message(
                 call.message.chat.id,
                 call.message.message_id
             )
+
         except Exception:
             pass
 
@@ -762,13 +833,17 @@ def verify_join(call):
 
         bot.send_message(
             user.id,
-            tr(user.id, "verified"),
+            tr(
+                user.id,
+                "verified"
+            ),
             reply_markup=user_keyboard(
                 get_lang(user.id)
             )
         )
 
     else:
+
         bot.answer_callback_query(
             call.id,
             "Please join both first.",
@@ -781,7 +856,10 @@ def verify_join(call):
 # ============================================================
 
 def language_keyboard():
-    kb = types.InlineKeyboardMarkup(row_width=2)
+
+    kb = types.InlineKeyboardMarkup(
+        row_width=2
+    )
 
     kb.add(
         types.InlineKeyboardButton(
@@ -798,9 +876,14 @@ def language_keyboard():
 
 
 @bot.callback_query_handler(
-    func=lambda call: call.data in ("lang_bn", "lang_en")
+    func=lambda call:
+        call.data in (
+            "lang_bn",
+            "lang_en"
+        )
 )
 def language_callback(call):
+
     lang = (
         "bn"
         if call.data == "lang_bn"
@@ -817,11 +900,16 @@ def language_callback(call):
         "Language changed."
     )
 
-    bot.edit_message_text(
-        TEXT[lang]["settings"],
-        call.message.chat.id,
-        call.message.message_id
-    )
+    try:
+
+        bot.edit_message_text(
+            TEXT[lang]["settings"],
+            call.message.chat.id,
+            call.message.message_id
+        )
+
+    except Exception:
+        pass
 
     bot.send_message(
         call.from_user.id,
@@ -831,93 +919,142 @@ def language_callback(call):
 
 
 # ============================================================
-# USER MENU
+# SETTINGS
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: m.text in (
-        "⚙️ সেটিংস",
-        "⚙️ Settings"
-    )
+    func=lambda m:
+        m.text in (
+            "⚙️ সেটিংস",
+            "⚙️ Settings"
+        )
 )
 def settings_handler(message):
-    if not check_membership(message.from_user.id):
-        send_join_message(message.chat.id)
-        return
 
-    bot.send_message(
-        message.chat.id,
-        tr(message.from_user.id, "settings"),
-        reply_markup=language_keyboard()
-    )
+    if not check_membership(
+        message.from_user.id
+    ):
 
+        send_join_message(
+            message.chat.id
+        )
 
-@bot.message_handler(
-    func=lambda m: m.text in (
-        "ℹ️ সাহায্য",
-        "ℹ️ Help"
-    )
-)
-def help_handler(message):
-    if not check_membership(message.from_user.id):
-        send_join_message(message.chat.id)
         return
 
     bot.send_message(
         message.chat.id,
         tr(
             message.from_user.id,
+            "settings"
+        ),
+        reply_markup=language_keyboard()
+    )
+
+
+# ============================================================
+# HELP
+# ============================================================
+
+@bot.message_handler(
+    func=lambda m:
+        m.text in (
+            "ℹ️ সাহায্য",
+            "ℹ️ Help"
+        )
+)
+def help_handler(message):
+
+    if not check_membership(
+        message.from_user.id
+    ):
+
+        send_join_message(
+            message.chat.id
+        )
+
+        return
+
+    bot.send_message(
+        message.chat.id,
+
+        tr(
+            message.from_user.id,
             "help",
             support=SUPPORT_USERNAME
         ),
+
         reply_markup=user_keyboard(
-            get_lang(message.from_user.id)
+            get_lang(
+                message.from_user.id
+            )
         )
     )
 
 
 # ============================================================
-# REDEEM
+# REDEEM BUTTON
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: m.text in (
-        "🔑 কোড রিডিম",
-        "🔑 Redeem Code"
-    )
+    func=lambda m:
+        m.text in (
+            "🔑 কোড রিডিম",
+            "🔑 Redeem Code"
+        )
 )
 def redeem_button(message):
-    if not check_membership(message.from_user.id):
-        send_join_message(message.chat.id)
+
+    if not check_membership(
+        message.from_user.id
+    ):
+
+        send_join_message(
+            message.chat.id
+        )
+
         return
 
     bot.send_message(
         message.chat.id,
-        tr(message.from_user.id, "redeem_prompt")
+        tr(
+            message.from_user.id,
+            "redeem_prompt"
+        )
     )
 
+
+# ============================================================
+# REDEEM CODE
+# ============================================================
 
 @bot.message_handler(
-    func=lambda m: (
+    func=lambda m:
         isinstance(m.text, str)
         and m.text.upper().startswith("GIVE-")
-    )
 )
 def redeem_code(message):
+
     user_id = message.from_user.id
 
-    save_user(message.from_user)
+    save_user(
+        message.from_user
+    )
 
     if is_banned(user_id):
         return
 
     if not check_membership(user_id):
-        send_join_message(message.chat.id)
+
+        send_join_message(
+            message.chat.id
+        )
+
         return
 
     code = message.text.strip().upper()
 
     with db_lock:
+
         conn = db()
 
         row = conn.execute("""
@@ -927,21 +1064,31 @@ def redeem_code(message):
         """, (code,)).fetchone()
 
         if not row:
+
             conn.close()
 
             bot.send_message(
                 user_id,
-                tr(user_id, "invalid_code")
+                tr(
+                    user_id,
+                    "invalid_code"
+                )
             )
+
             return
 
         if row["status"] != "active":
+
             conn.close()
 
             bot.send_message(
                 user_id,
-                tr(user_id, "already_used")
+                tr(
+                    user_id,
+                    "already_used"
+                )
             )
+
             return
 
         now = datetime.utcnow().strftime(
@@ -950,10 +1097,12 @@ def redeem_code(message):
 
         updated = conn.execute("""
             UPDATE giveaways
+
             SET
                 status='used',
                 used_by=?,
                 used_at=?
+
             WHERE
                 redeem_code=?
                 AND status='active'
@@ -964,12 +1113,17 @@ def redeem_code(message):
         )).rowcount
 
         if updated != 1:
+
             conn.close()
 
             bot.send_message(
                 user_id,
-                tr(user_id, "already_used")
+                tr(
+                    user_id,
+                    "already_used"
+                )
             )
+
             return
 
         conn.execute("""
@@ -978,6 +1132,7 @@ def redeem_code(message):
                 redeem_code,
                 reward_text
             )
+
             VALUES (?, ?, ?)
         """, (
             user_id,
@@ -990,6 +1145,7 @@ def redeem_code(message):
 
     bot.send_message(
         user_id,
+
         tr(
             user_id,
             "redeem_success",
@@ -1004,65 +1160,81 @@ def redeem_code(message):
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: m.text in (
-        "🎁 ডেইলি গিভঅ্যাওয়ে",
-        "🎁 Daily Giveaway"
-    )
+    func=lambda m:
+        m.text in (
+            "🎁 ডেইলি গিভঅ্যাওয়ে",
+            "🎁 Daily Giveaway"
+        )
 )
 def daily_giveaway(message):
+
     user_id = message.from_user.id
 
     if not check_membership(user_id):
-        send_join_message(message.chat.id)
+
+        send_join_message(
+            message.chat.id
+        )
+
         return
 
     today = date.today().isoformat()
 
     with db_lock:
+
         conn = db()
-
-        row = conn.execute("""
-            SELECT last_seen
-            FROM users
-            WHERE user_id=?
-        """, (user_id,)).fetchone()
-
-        # Daily claim is stored using a simple user setting table.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS daily_claims (
-                user_id INTEGER PRIMARY KEY,
-                claim_date TEXT
-            )
-        """)
 
         claim = conn.execute("""
             SELECT claim_date
             FROM daily_claims
             WHERE user_id=?
-        """, (user_id,)).fetchone()
+        """, (
+            user_id,
+        )).fetchone()
 
-        if claim and claim["claim_date"] == today:
+        if (
+            claim
+            and claim["claim_date"] == today
+        ):
+
             conn.close()
 
             bot.send_message(
                 user_id,
-                tr(user_id, "daily_done")
+                tr(
+                    user_id,
+                    "daily_done"
+                )
             )
+
             return
 
         conn.execute("""
-            INSERT INTO daily_claims(user_id, claim_date)
+            INSERT INTO daily_claims(
+                user_id,
+                claim_date
+            )
+
             VALUES (?, ?)
+
             ON CONFLICT(user_id)
-            DO UPDATE SET claim_date=excluded.claim_date
-        """, (user_id, today))
+
+            DO UPDATE SET
+                claim_date=excluded.claim_date
+        """, (
+            user_id,
+            today
+        ))
 
         conn.commit()
         conn.close()
 
     bot.send_message(
         user_id,
-        tr(user_id, "daily_success")
+        tr(
+            user_id,
+            "daily_success"
+        )
     )
 
 
@@ -1071,45 +1243,51 @@ def daily_giveaway(message):
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: m.text in (
-        "📊 আমার স্ট্যাটাস",
-        "📊 My Status"
-    )
+    func=lambda m:
+        m.text in (
+            "📊 আমার স্ট্যাটাস",
+            "📊 My Status"
+        )
 )
 def my_status(message):
+
     user_id = message.from_user.id
 
     if not check_membership(user_id):
-        send_join_message(message.chat.id)
+
+        send_join_message(
+            message.chat.id
+        )
+
         return
 
     with db_lock:
+
         conn = db()
 
         user = conn.execute("""
             SELECT *
             FROM users
             WHERE user_id=?
-        """, (user_id,)).fetchone()
+        """, (
+            user_id,
+        )).fetchone()
 
         count_row = conn.execute("""
             SELECT COUNT(*) AS total
             FROM redeem_history
             WHERE user_id=?
-        """, (user_id,)).fetchone()
-
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS daily_claims (
-                user_id INTEGER PRIMARY KEY,
-                claim_date TEXT
-            )
-        """)
+        """, (
+            user_id,
+        )).fetchone()
 
         daily = conn.execute("""
             SELECT claim_date
             FROM daily_claims
             WHERE user_id=?
-        """, (user_id,)).fetchone()
+        """, (
+            user_id,
+        )).fetchone()
 
         conn.close()
 
@@ -1126,93 +1304,60 @@ def my_status(message):
 
     daily_text = (
         "Claimed"
-        if daily and daily["claim_date"] == date.today().isoformat()
+        if (
+            daily
+            and daily["claim_date"]
+            == date.today().isoformat()
+        )
         else "Not Claimed"
     )
 
     bot.send_message(
+
         user_id,
+
         tr(
             user_id,
             "status",
+
             user_id=user_id,
+
             name=name or "Unknown",
+
             username=username,
+
             count=count_row["total"],
+
             daily=daily_text
         )
     )
 
 
 # ============================================================
-# ADMIN PANEL
+# ADMIN USER MENU
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: (
+    func=lambda m:
         is_admin(m.from_user.id)
         and m.text == "🏠 User Menu"
-    )
 )
 def admin_user_menu(message):
+
     bot.send_message(
         message.chat.id,
-        tr(message.from_user.id, "main"),
+
+        tr(
+            message.from_user.id,
+            "main"
+        ),
+
         reply_markup=user_keyboard(
-            get_lang(message.from_user.id)
-        )
-    )
-
-
-@bot.message_handler(
-    func=lambda m: (
-        m.from_user.id != ADMIN_ID
-        and m.text in (
-            "➕ Add Giveaway",
-            "📋 Active Codes",
-            "📊 Statistics",
-            "📢 Broadcast",
-            "💬 Direct User Chat",
-            "🛑 Cancel Broadcast"
-        )
-    )
-)
-def blocked_admin_buttons(message):
-    bot.send_message(
-        message.chat.id,
-        tr(message.from_user.id, "admin_only")
-    )
-
-
-# ============================================================
-# GENERATE REDEEM CODE
-# ============================================================
-
-def generate_redeem_code():
-    alphabet = string.ascii_uppercase + string.digits
-
-    while True:
-        code = (
-            "GIVE-"
-            + "".join(
-                secrets.choice(alphabet)
-                for _ in range(8)
+            get_lang(
+                message.from_user.id
             )
         )
-
-        with db_lock:
-            conn = db()
-
-            row = conn.execute("""
-                SELECT id
-                FROM giveaways
-                WHERE redeem_code=?
-            """, (code,)).fetchone()
-
-            conn.close()
-
-        if not row:
-            return code
+    )
 
 
 # ============================================================
@@ -1220,13 +1365,15 @@ def generate_redeem_code():
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: (
+    func=lambda m:
         is_admin(m.from_user.id)
         and m.text == "➕ Add Giveaway"
-    )
 )
 def add_giveaway_start(message):
-    admin_states[message.from_user.id] = {
+
+    admin_states[
+        message.from_user.id
+    ] = {
         "action": "add_reward"
     }
 
@@ -1237,17 +1384,57 @@ def add_giveaway_start(message):
 
 
 # ============================================================
+# GENERATE CODE
+# ============================================================
+
+def generate_redeem_code():
+
+    alphabet = (
+        string.ascii_uppercase
+        + string.digits
+    )
+
+    while True:
+
+        code = (
+            "GIVE-"
+            + "".join(
+                secrets.choice(alphabet)
+                for _ in range(8)
+            )
+        )
+
+        with db_lock:
+
+            conn = db()
+
+            row = conn.execute("""
+                SELECT id
+                FROM giveaways
+                WHERE redeem_code=?
+            """, (
+                code,
+            )).fetchone()
+
+            conn.close()
+
+        if not row:
+            return code
+
+
+# ============================================================
 # ACTIVE CODES
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: (
+    func=lambda m:
         is_admin(m.from_user.id)
         and m.text == "📋 Active Codes"
-    )
 )
 def active_codes(message):
+
     with db_lock:
+
         conn = db()
 
         rows = conn.execute("""
@@ -1264,18 +1451,27 @@ def active_codes(message):
         conn.close()
 
     if not rows:
+
         bot.send_message(
             message.chat.id,
             "📋 <b>Active Codes</b>\n\n"
             "❌ No active codes."
         )
+
         return
 
-    text = "📋 <b>Active Codes</b>\n\n"
+    text = (
+        "📋 <b>Active Codes</b>\n\n"
+    )
 
-    for i, row in enumerate(rows, 1):
+    for i, row in enumerate(
+        rows,
+        1
+    ):
+
         text += (
-            f"{i}. <code>{row['redeem_code']}</code>\n"
+            f"{i}. "
+            f"<code>{row['redeem_code']}</code>\n"
             f"🎁 {row['reward_text']}\n"
             f"🕒 {row['created_at']}\n\n"
         )
@@ -1287,17 +1483,18 @@ def active_codes(message):
 
 
 # ============================================================
-# ADMIN STATISTICS
+# STATISTICS
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: (
+    func=lambda m:
         is_admin(m.from_user.id)
         and m.text == "📊 Statistics"
-    )
 )
 def admin_statistics(message):
+
     with db_lock:
+
         conn = db()
 
         users = conn.execute(
@@ -1324,27 +1521,35 @@ def admin_statistics(message):
         conn.close()
 
     bot.send_message(
+
         message.chat.id,
+
         "📊 <b>Bot Statistics</b>\n\n"
+
         f"👥 Total Users: <b>{users}</b>\n"
+
         f"🎁 Active Codes: <b>{active}</b>\n"
+
         f"✅ Used Codes: <b>{used}</b>\n"
+
         f"🔑 Total Redeems: <b>{redeemed}</b>"
     )
 
 
 # ============================================================
-# ADMIN BROADCAST START
+# BROADCAST START
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: (
+    func=lambda m:
         is_admin(m.from_user.id)
         and m.text == "📢 Broadcast"
-    )
 )
 def broadcast_start(message):
-    admin_states[message.from_user.id] = {
+
+    admin_states[
+        message.from_user.id
+    ] = {
         "action": "broadcast"
     }
 
@@ -1355,16 +1560,16 @@ def broadcast_start(message):
 
 
 # ============================================================
-# CANCEL BROADCAST BUTTON
+# CANCEL BROADCAST
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: (
+    func=lambda m:
         is_admin(m.from_user.id)
         and m.text == "🛑 Cancel Broadcast"
-    )
 )
 def cancel_broadcast(message):
+
     global broadcast_running
 
     broadcast_running = False
@@ -1376,17 +1581,19 @@ def cancel_broadcast(message):
 
 
 # ============================================================
-# DIRECT USER CHAT START
+# DIRECT CHAT
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: (
+    func=lambda m:
         is_admin(m.from_user.id)
         and m.text == "💬 Direct User Chat"
-    )
 )
 def direct_chat_start(message):
-    admin_states[message.from_user.id] = {
+
+    admin_states[
+        message.from_user.id
+    ] = {
         "action": "direct_user_id"
     }
 
@@ -1397,33 +1604,15 @@ def direct_chat_start(message):
 
 
 # ============================================================
-# /ENDCHAT
-# ============================================================
-
-@bot.message_handler(commands=["endchat"])
-def end_chat(message):
-    if not is_admin(message.from_user.id):
-        return
-
-    admin_states.pop(
-        message.from_user.id,
-        None
-    )
-
-    bot.send_message(
-        message.chat.id,
-        "✅ Direct User Chat ended.",
-        reply_markup=admin_keyboard()
-    )
-
-
-# ============================================================
 # /CANCEL
 # ============================================================
 
 @bot.message_handler(commands=["cancel"])
 def cancel_operation(message):
-    if not is_admin(message.from_user.id):
+
+    if not is_admin(
+        message.from_user.id
+    ):
         return
 
     admin_states.pop(
@@ -1439,103 +1628,182 @@ def cancel_operation(message):
 
 
 # ============================================================
+# /ENDCHAT
+# ============================================================
+
+@bot.message_handler(commands=["endchat"])
+def end_chat(message):
+
+    if not is_admin(
+        message.from_user.id
+    ):
+        return
+
+    admin_states.pop(
+        message.from_user.id,
+        None
+    )
+
+    bot.send_message(
+        message.chat.id,
+        "✅ Direct User Chat ended.",
+        reply_markup=admin_keyboard()
+    )
+
+
+# ============================================================
 # BROADCAST WORKER
 # ============================================================
 
-def broadcast_worker(admin_id, message):
+def broadcast_worker(
+    admin_id,
+    message
+):
+
     global broadcast_running
 
     users = all_user_ids()
 
     total = len(users)
+
     success = 0
     failed = 0
 
     broadcast_running = True
 
     progress_message = bot.send_message(
+
         admin_id,
+
         "📢 <b>Broadcast Started</b>\n\n"
+
         f"👥 Total: {total}\n"
+
+        "📤 Processed: 0\n"
+
         "✅ Success: 0\n"
+
         "❌ Failed: 0\n"
+
         "📊 Progress: 0%"
     )
 
-    for index, user_id in enumerate(users, 1):
+    processed = 0
+
+    for user_id in users:
 
         if not broadcast_running:
             break
 
+        processed += 1
+
         try:
+
             bot.copy_message(
                 user_id,
                 admin_id,
                 message.message_id
             )
+
             success += 1
 
         except Exception:
+
             failed += 1
 
-        if index % 10 == 0 or index == total:
+        if (
+            processed % 10 == 0
+            or processed == total
+        ):
+
             percent = (
-                int(index * 100 / total)
+                int(
+                    processed
+                    * 100
+                    / total
+                )
                 if total
                 else 100
             )
 
             try:
+
                 bot.edit_message_text(
+
                     "📢 <b>Broadcast Running...</b>\n\n"
+
                     f"👥 Total: {total}\n"
-                    f"📤 Processed: {index}\n"
+
+                    f"📤 Processed: {processed}\n"
+
                     f"✅ Success: {success}\n"
+
                     f"❌ Failed: {failed}\n"
+
                     f"📊 Progress: {percent}%",
+
                     admin_id,
+
                     progress_message.message_id
                 )
+
             except Exception:
                 pass
 
         time.sleep(0.05)
 
-    stopped = not broadcast_running
+    cancelled = not broadcast_running
 
     broadcast_running = False
 
     try:
+
         bot.edit_message_text(
-            "🛑 <b>Broadcast Finished</b>\n\n"
+
+            "📢 <b>Broadcast Finished</b>\n\n"
+
             f"👥 Total: {total}\n"
-            f"📤 Processed: {min(index if total else 0, total)}\n"
+
+            f"📤 Processed: {processed}\n"
+
             f"✅ Success: {success}\n"
+
             f"❌ Failed: {failed}\n"
-            f"🛑 Cancelled: {'Yes' if stopped else 'No'}",
+
+            f"🛑 Cancelled: "
+            f"{'Yes' if cancelled else 'No'}",
+
             admin_id,
+
             progress_message.message_id
         )
+
     except Exception:
         pass
 
 
 # ============================================================
-# ADMIN INPUT HANDLER
+# ADMIN INPUT
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: is_admin(m.from_user.id)
+    func=lambda m:
+        is_admin(m.from_user.id)
 )
 def admin_input(message):
+
     user_id = message.from_user.id
 
-    state = admin_states.get(user_id)
+    state = admin_states.get(
+        user_id
+    )
 
     if not state:
         return
 
-    action = state.get("action")
+    action = state.get(
+        "action"
+    )
 
     # --------------------------------------------------------
     # ADD GIVEAWAY
@@ -1543,28 +1811,38 @@ def admin_input(message):
 
     if action == "add_reward":
 
-        reward = (message.text or "").strip()
-
-        if not reward:
-            bot.send_message(
-                user_id,
-                "❌ Reward empty রাখা যাবে না।"
-            )
-            return
+        reward = (
+            message.text or ""
+        ).strip()
 
         if reward.lower() == "/cancel":
-            admin_states.pop(user_id, None)
+
+            admin_states.pop(
+                user_id,
+                None
+            )
 
             bot.send_message(
                 user_id,
                 TEXT["bn"]["cancelled"],
                 reply_markup=admin_keyboard()
             )
+
+            return
+
+        if not reward:
+
+            bot.send_message(
+                user_id,
+                "❌ Reward empty রাখা যাবে না।"
+            )
+
             return
 
         code = generate_redeem_code()
 
         with db_lock:
+
             conn = db()
 
             conn.execute("""
@@ -1574,7 +1852,13 @@ def admin_input(message):
                     category,
                     status
                 )
-                VALUES (?, ?, 'Giveaway', 'active')
+
+                VALUES (
+                    ?,
+                    ?,
+                    'Giveaway',
+                    'active'
+                )
             """, (
                 code,
                 reward
@@ -1589,13 +1873,19 @@ def admin_input(message):
         )
 
         bot.send_message(
+
             user_id,
+
             "🎉 <b>Giveaway Created!</b>\n\n"
+
             f"🔑 Redeem Code:\n"
             f"<code>{code}</code>\n\n"
+
             f"🎁 Reward:\n"
             f"<b>{reward}</b>\n\n"
+
             "✅ Code is now active.",
+
             reply_markup=admin_keyboard()
         )
 
@@ -1607,9 +1897,6 @@ def admin_input(message):
 
     if action == "broadcast":
 
-        if not message.text and not message.content_type:
-            return
-
         admin_states.pop(
             user_id,
             None
@@ -1617,7 +1904,10 @@ def admin_input(message):
 
         threading.Thread(
             target=broadcast_worker,
-            args=(user_id, message),
+            args=(
+                user_id,
+                message
+            ),
             daemon=True
         ).start()
 
@@ -1630,32 +1920,41 @@ def admin_input(message):
     if action == "direct_user_id":
 
         try:
+
             target_id = int(
                 (message.text or "").strip()
             )
+
         except Exception:
+
             bot.send_message(
                 user_id,
                 "❌ Invalid User ID."
             )
+
             return
 
         with db_lock:
+
             conn = db()
 
             row = conn.execute("""
                 SELECT user_id
                 FROM users
                 WHERE user_id=?
-            """, (target_id,)).fetchone()
+            """, (
+                target_id,
+            )).fetchone()
 
             conn.close()
 
         if not row:
+
             bot.send_message(
                 user_id,
                 TEXT["bn"]["user_not_found"]
             )
+
             return
 
         admin_states[user_id] = {
@@ -1664,9 +1963,14 @@ def admin_input(message):
         }
 
         bot.send_message(
+
             user_id,
+
             "💬 <b>User Found!</b>\n\n"
-            f"🆔 User ID: <code>{target_id}</code>\n\n"
+
+            f"🆔 User ID: "
+            f"<code>{target_id}</code>\n\n"
+
             "এখন Message পাঠান।\n"
             "শেষ করতে /endchat লিখুন।"
         )
@@ -1679,9 +1983,12 @@ def admin_input(message):
 
     if action == "direct_message":
 
-        target_id = state.get("target_id")
+        target_id = state.get(
+            "target_id"
+        )
 
         try:
+
             bot.copy_message(
                 target_id,
                 user_id,
@@ -1693,7 +2000,8 @@ def admin_input(message):
                 "✅ Message sent successfully."
             )
 
-        except Exception as e:
+        except Exception:
+
             bot.send_message(
                 user_id,
                 "❌ Message could not be sent."
@@ -1703,55 +2011,46 @@ def admin_input(message):
 
 
 # ============================================================
-# USER MESSAGE HANDLER
+# USER MESSAGE
 # ============================================================
 
 @bot.message_handler(
-    func=lambda m: m.from_user.id != ADMIN_ID
+    func=lambda m:
+        m.from_user.id != ADMIN_ID
 )
 def user_message(message):
+
     user_id = message.from_user.id
 
-    save_user(message.from_user)
+    save_user(
+        message.from_user
+    )
 
     if is_banned(user_id):
         return
 
-    # --------------------------------------------------------
-    # ADMIN COMMAND ATTEMPT
-    # --------------------------------------------------------
-
     if message.text == "/admin":
+
         bot.send_message(
             user_id,
-            tr(user_id, "admin_only")
+            tr(
+                user_id,
+                "admin_only"
+            )
         )
-        return
 
-    # --------------------------------------------------------
-    # MEMBERSHIP CHECK
-    # --------------------------------------------------------
+        return
 
     if not check_membership(user_id):
-        send_join_message(user_id)
-        return
 
-    # --------------------------------------------------------
-    # /USERS / ADMIN COMMANDS
-    # --------------------------------------------------------
-
-    if message.text == "/users":
-        bot.send_message(
-            user_id,
-            tr(user_id, "admin_only")
+        send_join_message(
+            user_id
         )
-        return
 
-    # --------------------------------------------------------
-    # FORWARD USER MESSAGE TO ADMIN
-    # --------------------------------------------------------
+        return
 
     try:
+
         username = (
             f"@{message.from_user.username}"
             if message.from_user.username
@@ -1759,10 +2058,16 @@ def user_message(message):
         )
 
         header = (
+
             "📩 <b>User Message</b>\n\n"
-            f"👤 {message.from_user.first_name or ''}\n"
+
+            f"👤 "
+            f"{message.from_user.first_name or ''}\n"
+
             f"🔗 {username}\n"
-            f"🆔 <code>{user_id}</code>"
+
+            f"🆔 "
+            f"<code>{user_id}</code>"
         )
 
         bot.send_message(
@@ -1771,19 +2076,24 @@ def user_message(message):
         )
 
         if message.content_type == "text":
+
             bot.send_message(
                 ADMIN_ID,
                 message.text
             )
 
         else:
+
             try:
+
                 bot.copy_message(
                     ADMIN_ID,
                     user_id,
                     message.message_id
                 )
+
             except Exception:
+
                 bot.send_message(
                     ADMIN_ID,
                     "📎 User sent a non-text message."
@@ -1799,14 +2109,23 @@ def user_message(message):
 
 @bot.message_handler(commands=["users"])
 def users_command(message):
-    if not is_admin(message.from_user.id):
+
+    if not is_admin(
+        message.from_user.id
+    ):
+
         bot.send_message(
             message.chat.id,
-            tr(message.from_user.id, "admin_only")
+            tr(
+                message.from_user.id,
+                "admin_only"
+            )
         )
+
         return
 
     with db_lock:
+
         conn = db()
 
         rows = conn.execute("""
@@ -1824,15 +2143,18 @@ def users_command(message):
         conn.close()
 
     if not rows:
+
         bot.send_message(
             message.chat.id,
             "👥 No users found."
         )
+
         return
 
     text = "👥 <b>Recent Users</b>\n\n"
 
     for row in rows:
+
         username = (
             f"@{row['username']}"
             if row["username"]
@@ -1845,9 +2167,15 @@ def users_command(message):
         ).strip()
 
         text += (
-            f"👤 {name or 'Unknown'}\n"
+
+            f"👤 "
+            f"{name or 'Unknown'}\n"
+
             f"🔗 {username}\n"
-            f"🆔 <code>{row['user_id']}</code>\n"
+
+            f"🆔 "
+            f"<code>{row['user_id']}</code>\n"
+
             f"🕒 {row['last_seen']}\n\n"
         )
 
@@ -1863,45 +2191,73 @@ def users_command(message):
 
 @bot.message_handler(commands=["admin"])
 def admin_command(message):
-    if not is_admin(message.from_user.id):
+
+    if not is_admin(
+        message.from_user.id
+    ):
+
         bot.send_message(
             message.chat.id,
-            tr(message.from_user.id, "admin_only")
+            tr(
+                message.from_user.id,
+                "admin_only"
+            )
         )
+
         return
 
     bot.send_message(
+
         message.chat.id,
-        tr(message.from_user.id, "admin_panel"),
+
+        tr(
+            message.from_user.id,
+            "admin_panel"
+        ),
+
         reply_markup=admin_keyboard()
     )
 
 
 # ============================================================
-# /HEALTH INFO
+# /HEALTH
 # ============================================================
 
 @bot.message_handler(commands=["health"])
 def health_command(message):
-    if not is_admin(message.from_user.id):
+
+    if not is_admin(
+        message.from_user.id
+    ):
         return
 
     bot.send_message(
+
         message.chat.id,
-        "✅ Bot is online.\n\n"
-        f"📢 Channel: <code>{CHANNEL_CHAT}</code>\n"
-        f"👥 Group: <code>{GROUP_CHAT}</code>\n"
-        f"🗄 Database: <code>{DB_FILE}</code>"
+
+        "✅ <b>Bot is Online</b>\n\n"
+
+        "📢 Channel:\n"
+        "<code>@bdgiveaways24</code>\n\n"
+
+        "👥 Group:\n"
+        "<code>@bdgivewaychat</code>\n\n"
+
+        f"🗄 Database:\n"
+        f"<code>{DB_FILE}</code>"
     )
 
 
 # ============================================================
-# ERROR SAFE POLLING
+# START BOT
 # ============================================================
 
 def start_bot():
+
     while True:
+
         try:
+
             bot.infinity_polling(
                 timeout=30,
                 long_polling_timeout=30,
@@ -1909,10 +2265,12 @@ def start_bot():
             )
 
         except Exception as e:
+
             print(
                 "Polling error:",
                 repr(e)
             )
+
             time.sleep(5)
 
 
@@ -1929,25 +2287,38 @@ if __name__ == "__main__":
 
     flask_thread.start()
 
-    print("======================================")
-    print("RAFIM GIVEAWAY BOT")
-    print("======================================")
     print(
-        "Channel:",
-        CHANNEL_CHAT
+        "======================================"
     )
+
     print(
-        "Group:",
-        GROUP_CHAT
+        "RAFIM GIVEAWAY BOT"
     )
+
     print(
-        "Admin ID:",
+        "======================================"
+    )
+
+    print(
+        "CHANNEL: @bdgiveaways24"
+    )
+
+    print(
+        "GROUP: @bdgivewaychat"
+    )
+
+    print(
+        "ADMIN ID:",
         ADMIN_ID
     )
+
     print(
-        "Database:",
+        "DATABASE:",
         DB_FILE
     )
-    print("======================================")
+
+    print(
+        "======================================"
+    )
 
     start_bot()
