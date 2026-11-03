@@ -1,4 +1,4 @@
-import os
+8import os
 import sqlite3
 import threading
 import time
@@ -25,10 +25,10 @@ from flask import Flask
 # CONFIG
 # ============================================================
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
+BOT_TOKEN = os.getenv("8886219226:AAFp6jBU2993zZv4BHRnTCV1-EPFOL9g7YY", "").strip()
 
 try:
-    ADMIN_ID = int(os.getenv("ADMIN_ID", "0").strip())
+    ADMIN_ID = int(os.getenv("8298133943", "0").strip())
 except Exception:
     ADMIN_ID = 0
 
@@ -37,7 +37,7 @@ CHANNEL_1 = "@bdgiveaways24"
 GROUP_1 = "@bdgivewaychat"
 
 SUPPORT_USERNAME = (
-    os.getenv("SUPPORT_USERNAME", "rafimhossen")
+    os.getenv("SUPPORT_USERNAME", "@rafimhossen")
     .strip()
     .lstrip("@")
 )
