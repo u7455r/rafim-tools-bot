@@ -25,12 +25,12 @@ from flask import Flask
 # CONFIG
 # ============================================================
 
-BOT_TOKEN = os.getenv("8886219226:AAFp6jBU2993zZv4BHRnTCV1-EPFOL9g7YY", "").strip()
+BOT_TOKEN = os.getenv("8886219226:AAF_RLMKJRXYxbLWTrLcGdxXcyZKIkRPBY4", "").strip()
 
 try:
     ADMIN_ID = int(os.getenv("8298133943", "0").strip())
 except Exception:
-    ADMIN_ID = 0
+    ADMIN_ID = 8298133943
 
 # New Channel + Group
 CHANNEL_1 = "@bdgiveaways24"
